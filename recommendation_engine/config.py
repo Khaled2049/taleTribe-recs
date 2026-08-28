@@ -13,7 +13,7 @@ Admin SDK and the rest of the repo already expect.
 
 import json
 import logging
-from typing import Optional
+from typing import Optional, cast
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
@@ -124,7 +124,7 @@ class RecSettings(BaseSettings):
         """Ensure cors_origins is a valid JSON list; fall back to '[]' (logged)."""
         raw = str(v) if v is not None else "[]"
         try:
-            parsed = json.loads(raw)
+            parsed = cast(object, json.loads(raw))
             if not isinstance(parsed, list):
                 logger.warning(
                     "cors_origins_invalid_shape: CORS_ORIGINS=%r is not a JSON list; "
@@ -199,7 +199,7 @@ class RecSettings(BaseSettings):
         return self.recs_service_url.strip().rstrip("/") or None
 
     @property
-    def allowed_callers(self) -> frozenset:
+    def allowed_callers(self) -> frozenset[str]:
         """Frozenset of trusted caller service account emails."""
         if self.environment != "production":
             return frozenset()
@@ -229,8 +229,11 @@ class RecSettings(BaseSettings):
         return EXPECTED_EMBEDDING_DIM
 
     @property
-    def parsed_cors_origins(self) -> list:
+    def parsed_cors_origins(self) -> list[str]:
         try:
-            return json.loads(self.cors_origins)
+            parsed = cast(object, json.loads(self.cors_origins))
         except (json.JSONDecodeError, ValueError):
             return []
+        if not isinstance(parsed, list):
+            return []
+        return [str(origin) for origin in parsed]

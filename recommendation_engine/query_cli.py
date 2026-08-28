@@ -21,7 +21,7 @@ import asyncio
 import json
 import logging
 import sys
-from typing import List, Optional
+from typing import List, Optional, cast
 
 from embedding_provider import get_embedding_provider
 from recommendation_engine.config import RecSettings
@@ -70,7 +70,19 @@ def _print_table(result, show_scores: bool) -> None:
     print()
 
 
-async def run(args) -> int:
+class _QueryArgs(argparse.Namespace):
+    title: list[str] | None
+    text: str | None
+    genre: list[str] | None
+    theme: list[str] | None
+    source: list[str] | None
+    max_words: int | None
+    top_k: int
+    scores: bool
+    json: bool
+
+
+async def run(args: _QueryArgs) -> int:
     settings = RecSettings()
     embedder = get_embedding_provider(settings.google_ai_studio_api_key)
     query_embedder = QueryEmbedder(embedder)
@@ -183,7 +195,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--scores", action="store_true", help="Show per-term score attribution"
     )
     parser.add_argument("--json", action="store_true", help="Emit JSON")
-    args = parser.parse_args(argv)
+    args = cast(_QueryArgs, parser.parse_args(argv))
     # Before RecSettings() is constructed anywhere, or the key in .env
     # stays invisible and this refuses to run for lack of it.
     load_env()

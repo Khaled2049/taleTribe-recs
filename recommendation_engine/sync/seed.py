@@ -25,7 +25,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, cast
 
 from recommendation_engine.config import RecSettings
 from recommendation_engine.db import Database
@@ -39,7 +39,20 @@ logging.basicConfig(format="%(levelname)s %(message)s", level=logging.INFO)
 logger = logging.getLogger("recs.seed")
 
 
-async def run(args) -> dict:
+class _SeedArgs(argparse.Namespace):
+    readers: int
+    seed: int
+    days: int
+    catalog_limit: int | None
+    out: str | None
+    load: str | None
+    purge: bool
+    refresh_only: bool
+    cooccurrence: bool
+    dry_run: bool
+
+
+async def run(args: _SeedArgs) -> dict:
     settings = RecSettings()
     db = Database(write_dsn=settings.write_dsn, read_dsn=settings.read_dsn)
     await db.connect()
@@ -169,7 +182,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--dry-run", action="store_true", help="Generate only; no database writes"
     )
-    args = parser.parse_args(argv)
+    args = cast(_SeedArgs, parser.parse_args(argv))
     load_env()
 
     try:

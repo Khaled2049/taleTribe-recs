@@ -27,7 +27,7 @@ import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, cast
 
 from embedding_provider import (
     get_embedding_provider,
@@ -418,6 +418,17 @@ async def _process_chunk(
     stats.upserted += len(rows)
 
 
+class _BackfillArgs(argparse.Namespace):
+    corpus: Path
+    limit: int | None
+    chunk_size: int
+    batch_size: int
+    concurrency: int
+    skip_normalization: bool
+    rebuild_index: bool
+    dry_run: bool
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Load the CMU corpus.")
     parser.add_argument("--corpus", type=Path, default=DEFAULT_CORPUS_PATH)
@@ -445,7 +456,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--dry-run", action="store_true", help="Parse only; no API calls, no writes"
     )
-    args = parser.parse_args(argv)
+    args = cast(_BackfillArgs, parser.parse_args(argv))
     # Before RecSettings() is constructed anywhere, or the key in .env
     # stays invisible and this refuses to run for lack of it.
     load_env()

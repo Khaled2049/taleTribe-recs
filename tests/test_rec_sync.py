@@ -7,6 +7,7 @@ import json
 import os
 import random
 from datetime import datetime, timezone
+from typing import cast
 
 import pytest
 
@@ -59,10 +60,19 @@ def test_record_round_trips_through_json():
 def test_json_omits_absent_fields():
     """A `like` has no value, chapter or total — emitting nulls would imply the
     source knows something it does not."""
-    payload = json.loads(
-        _record(
-            kind=KIND_LIKE, value=None, chapter_index=None, total_chapters=None
-        ).to_json()
+    payload = cast(
+        dict[str, object],
+        cast(
+            object,
+            json.loads(
+                _record(
+                    kind=KIND_LIKE,
+                    value=None,
+                    chapter_index=None,
+                    total_chapters=None,
+                ).to_json()
+            ),
+        ),
     )
 
     assert set(payload) == {"user_id", "source", "source_id", "kind", "occurred_at"}

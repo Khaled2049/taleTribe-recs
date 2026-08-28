@@ -22,7 +22,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence, cast
 
 from recommendation_engine.ingest.compose import summary_sha
 from recommendation_engine.ingest.vocabularies import (
@@ -164,15 +164,21 @@ def build_prompt(batch: Sequence[tuple]) -> str:
     )
 
 
-def _coerce(raw: dict, stats: NormalizeStats) -> Normalization:
+def _string_items(value: object | None) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in cast(list[object], value)]
+
+
+def _coerce(raw: dict[str, object], stats: NormalizeStats) -> Normalization:
     """Validate one result object and force it into the vocabularies."""
     premise = " ".join(str(raw.get("core_premise") or "").split())
     words = premise.split(" ")
     if len(words) > MAX_PREMISE_WORDS:
         premise = " ".join(words[:MAX_PREMISE_WORDS])
 
-    raw_themes = [str(t) for t in (raw.get("themes") or [])]
-    raw_tones = [str(t) for t in (raw.get("tone") or [])]
+    raw_themes = _string_items(raw.get("themes"))
+    raw_tones = _string_items(raw.get("tone"))
 
     # Relocate cross-axis terms before filtering, so a tone filed under themes is
     # recovered rather than discarded.
@@ -196,7 +202,12 @@ def _coerce(raw: dict, stats: NormalizeStats) -> Normalization:
             stats.dropped_tones += 1
 
     try:
-        confidence = float(raw.get("confidence"))
+        confidence_value = raw.get("confidence")
+        confidence = (
+            float(confidence_value)
+            if isinstance(confidence_value, (str, bytes, int, float))
+            else 0.0
+        )
     except (TypeError, ValueError):
         confidence = 0.0
     confidence = max(0.0, min(1.0, confidence))
@@ -306,7 +317,7 @@ class Normalizer:
         self.stats.batches += 1
         prompt = build_prompt(batch)
         try:
-            payload = await self._client.generate_json(
+            generated = await self._client.generate_json(
                 prompt,
                 response_schema=_RESPONSE_SCHEMA,
                 system=SYSTEM_PROMPT,
@@ -346,9 +357,21 @@ class Normalizer:
             self.stats.failed += len(batch)
             return {}
 
+        if not isinstance(generated, dict):
+            logger.warning("normalization_batch_invalid_shape size=%d", len(batch))
+            self.stats.failed += len(batch)
+            return {}
+        payload = cast(dict[str, object], generated)
+
         by_id = {str(identifier): None for identifier, _, _, _ in batch}
         out: Dict[str, Normalization] = {}
-        for raw in payload.get("results") or []:
+        result_values = payload.get("results")
+        if not isinstance(result_values, list):
+            result_values = []
+        for raw_value in cast(list[object], result_values):
+            if not isinstance(raw_value, dict):
+                continue
+            raw = cast(dict[str, object], raw_value)
             identifier = str(raw.get("id") or "")
             if identifier not in by_id:
                 # Model echoed an id that was not in the batch — ignore rather

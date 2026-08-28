@@ -216,7 +216,7 @@ class Database:
     # Small conveniences used by ingest and scoring
     # ------------------------------------------------------------------
 
-    async def load_config(self) -> dict:
+    async def load_config(self) -> dict[str, float]:
         """Read the scoring knobs. Kept in Postgres so ranking can be retuned
         without a redeploy."""
         rows = await self.read_pool.fetch(
@@ -224,10 +224,10 @@ class Database:
         )
         return {r["key"]: float(r["value"]) for r in rows}
 
-    async def fetch_read(self, sql: str, *args: Any) -> Sequence[asyncpg.Record]:
+    async def fetch_read(self, sql: str, *args: object) -> Sequence[asyncpg.Record]:
         return await self.read_pool.fetch(sql, *args)
 
-    async def execute_write(self, sql: str, *args: Any) -> str:
+    async def execute_write(self, sql: str, *args: object) -> str:
         return await self.write_pool.execute(sql, *args)
 
 

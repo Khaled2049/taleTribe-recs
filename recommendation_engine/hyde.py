@@ -16,8 +16,9 @@ land in a different region of the space and defeat the purpose.
 """
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, cast
 
 from recommendation_engine.ingest.vocabularies import prompt_vocabulary_block
 from recommendation_engine.llm import GeminiClient, LLMError
@@ -56,7 +57,7 @@ class HydeResult:
     themes: List[str]
     tone: List[str]
 
-    def as_dict(self) -> dict:
+    def as_dict(self) -> dict[str, object]:
         return {
             "title": self.title,
             "core_premise": self.core_premise,
@@ -84,7 +85,13 @@ def build_prompt(query: str) -> str:
     )
 
 
-def compose_hyde_text(payload: dict) -> str:
+def _strings(value: object | None) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in cast(list[object], value)]
+
+
+def compose_hyde_text(payload: Mapping[str, object]) -> str:
     """Render the hypothetical entry in the catalog's own embedding format.
 
     Field-for-field identical to `compose.compose_embed_input`, minus Author —
@@ -101,12 +108,12 @@ def compose_hyde_text(payload: dict) -> str:
         NormalizedItem(
             title=str(payload.get("title") or "Untitled"),
             author=None,
-            genres=[str(g) for g in (payload.get("genres") or [])],
+            genres=_strings(payload.get("genres")),
             core_premise=str(payload.get("core_premise") or ""),
             # Same vocabulary discipline as the catalog: an invented theme would
             # be a token the corpus never uses.
-            themes=filter_themes([str(t) for t in (payload.get("themes") or [])]),
-            tone=filter_tones([str(t) for t in (payload.get("tone") or [])]),
+            themes=filter_themes(_strings(payload.get("themes"))),
+            tone=filter_tones(_strings(payload.get("tone"))),
         )
     )
 
@@ -125,7 +132,7 @@ async def generate(
         return None
 
     try:
-        payload = await client.generate_json(
+        generated = await client.generate_json(
             build_prompt(query),
             response_schema=_RESPONSE_SCHEMA,
             system=_SYSTEM,
@@ -138,6 +145,11 @@ async def generate(
         logger.warning("hyde_generation_failed error=%s", str(exc)[:200])
         return None
 
+    if not isinstance(generated, dict):
+        logger.warning("hyde_generation_invalid_shape")
+        return None
+    payload = cast(dict[str, object], generated)
+
     embed_text = compose_hyde_text(payload)
     if not embed_text.strip():
         return None
@@ -146,6 +158,6 @@ async def generate(
         embed_text=embed_text,
         title=str(payload.get("title") or ""),
         core_premise=str(payload.get("core_premise") or ""),
-        themes=[str(t) for t in (payload.get("themes") or [])],
-        tone=[str(t) for t in (payload.get("tone") or [])],
+        themes=_strings(payload.get("themes")),
+        tone=_strings(payload.get("tone")),
     )

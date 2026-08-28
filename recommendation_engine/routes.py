@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from recommendation_engine import explain as explain_mod
 from recommendation_engine import hyde as hyde_mod
+from recommendation_engine.app_state import recommendation_state
 from recommendation_engine.pipeline import rank
 from recommendation_engine.retrieval import RetrievalFilters
 from recommendation_engine.scoring import CatalogStats, ScoringConfig
@@ -117,7 +118,8 @@ def build_router(verify_internal_token) -> APIRouter:
     # ── Helpers ──────────────────────────────────────────────────────────
 
     async def _check_rate(request: Request, user_id: str, llm: bool = False) -> None:
-        if not await request.app.state.rate_limiter.allow(user_id):
+        state = recommendation_state(request)
+        if not await state.rate_limiter.allow(user_id):
             raise HTTPException(
                 status_code=429,
                 detail={
@@ -126,7 +128,7 @@ def build_router(verify_internal_token) -> APIRouter:
                     "details": None,
                 },
             )
-        if llm and not await request.app.state.llm_rate_limiter.allow(user_id):
+        if llm and not await state.llm_rate_limiter.allow(user_id):
             raise HTTPException(
                 status_code=429,
                 detail={
@@ -141,7 +143,8 @@ def build_router(verify_internal_token) -> APIRouter:
 
     async def _load_targets(request: Request, item_ids: List[int]) -> list:
         """Fetch the fields an explanation needs, by id."""
-        rows = await request.app.state.db.read_pool.fetch(
+        state = recommendation_state(request)
+        rows = await state.db.read_pool.fetch(
             "SELECT id, source::text AS source, source_id, title, author, genres, "
             "themes, tone, core_premise, embed_input_sha "
             "FROM recommendations.items WHERE id = ANY($1::bigint[])",
@@ -184,7 +187,7 @@ def build_router(verify_internal_token) -> APIRouter:
         honestly in `mode` rather than dressed up as personalization.
         """
         await _check_rate(request, payload.user_id)
-        state = request.app.state
+        state = recommendation_state(request)
         config, stats = await cached.get(state.db, state.retriever)
 
         row = await state.db.read_pool.fetchrow(
@@ -246,7 +249,7 @@ def build_router(verify_internal_token) -> APIRouter:
                 },
             )
 
-        state = request.app.state
+        state = recommendation_state(request)
         settings = state.settings
         wants_hyde = (
             settings.recs_enable_hyde if payload.use_hyde is None else payload.use_hyde
@@ -365,7 +368,7 @@ def build_router(verify_internal_token) -> APIRouter:
         responses and so cannot stream.
         """
         await _check_rate(request, payload.user_id, llm=True)
-        state = request.app.state
+        state = recommendation_state(request)
 
         targets = await _load_targets(request, payload.item_ids)
         if not targets:
@@ -429,7 +432,7 @@ def build_router(verify_internal_token) -> APIRouter:
             )
 
         await _check_rate(request, user_id, llm=True)
-        state = request.app.state
+        state = recommendation_state(request)
         targets = await _load_targets(request, ids)
         fingerprint = explain_mod.query_fingerprint(query=prompt, seed_item_ids=seeds)
         context = explain_mod.describe_context(prompt, None)

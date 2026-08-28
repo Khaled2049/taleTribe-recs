@@ -4,6 +4,7 @@ import hashlib
 import logging
 import os
 from abc import ABC, abstractmethod
+from typing import cast
 
 import anyio
 import httpx
@@ -65,6 +66,17 @@ class EmbeddingTransientError(EmbeddingError):
     15k-document backfill retries what it should and fails fast on what it
     shouldn't.
     """
+
+
+def _float_values(value: object | None) -> list[float]:
+    if not isinstance(value, list):
+        raise EmbeddingError("embedding upstream returned invalid vector values")
+    values: list[float] = []
+    for item in cast(list[object], value):
+        if not isinstance(item, (int, float)):
+            raise EmbeddingError("embedding vector contained a non-numeric value")
+        values.append(float(item))
+    return values
 
 
 # Single source of truth for the embedding dimension. EVERY vector we write
@@ -129,6 +141,9 @@ class EmbeddingProvider(ABC):
         """
         return [await self.embed(text, task_type=task_type) for text in texts]
 
+    async def aclose(self) -> None:
+        """Release provider resources; stateless providers have nothing to do."""
+
 
 class GoogleAIEmbeddingProvider(EmbeddingProvider):
     def __init__(self, api_key: str, model: str = _GOOGLE_DEFAULT_MODEL):
@@ -149,7 +164,7 @@ class GoogleAIEmbeddingProvider(EmbeddingProvider):
     def model_id(self) -> str:
         return f"google:{self._model}"
 
-    def _request_body(self, text: str, task_type: str | None) -> dict:
+    def _request_body(self, text: str, task_type: str | None) -> dict[str, object]:
         """Build one embedContent request body.
 
         When `task_type` is None the `taskType` key is omitted entirely rather
@@ -158,7 +173,7 @@ class GoogleAIEmbeddingProvider(EmbeddingProvider):
         it, because the failure mode is silent: a task-typed vector simply stops
         matching its neighbours and retrieval returns nothing.
         """
-        body: dict = {
+        body: dict[str, object] = {
             "model": f"models/{self._model}",
             "content": {"parts": [{"text": text}]},
             # Truncate MRL models (e.g. gemini-embedding-001, native 3072) to
@@ -177,7 +192,7 @@ class GoogleAIEmbeddingProvider(EmbeddingProvider):
         before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True,
     )
-    async def _post(self, url: str, payload: dict) -> dict:
+    async def _post(self, url: str, payload: dict[str, object]) -> dict[str, object]:
         """POST with retry on transient failures.
 
         A 15k-document backfill will hit rate limits; without this the whole run
@@ -201,11 +216,17 @@ class GoogleAIEmbeddingProvider(EmbeddingProvider):
             raise EmbeddingError(
                 f"embedding request rejected with {resp.status_code}: {resp.text[:200]}"
             )
-        return resp.json()
+        parsed = cast(object, resp.json())
+        if not isinstance(parsed, dict):
+            raise EmbeddingError("embedding upstream returned a non-object response")
+        return cast(dict[str, object], parsed)
 
     async def embed(self, text: str, task_type: str | None = None) -> list[float]:
         data = await self._post(self._url, self._request_body(text, task_type))
-        return data["embedding"]["values"]
+        embedding = data.get("embedding")
+        if not isinstance(embedding, dict):
+            raise EmbeddingError("embedding upstream omitted embedding values")
+        return _float_values(cast(dict[str, object], embedding).get("values"))
 
     async def embed_batch(
         self, texts: list[str], task_type: str | None = None
@@ -226,7 +247,12 @@ class GoogleAIEmbeddingProvider(EmbeddingProvider):
                 self._batch_url,
                 {"requests": [self._request_body(text, task_type) for text in chunk]},
             )
-            embeddings = data.get("embeddings", [])
+            raw_embeddings = data.get("embeddings")
+            embeddings = (
+                cast(list[object], raw_embeddings)
+                if isinstance(raw_embeddings, list)
+                else []
+            )
             if len(embeddings) != len(chunk):
                 # Order and count are the contract callers rely on to zip vectors
                 # back onto rows. A short response must not silently misalign them.
@@ -234,7 +260,12 @@ class GoogleAIEmbeddingProvider(EmbeddingProvider):
                     f"batch embedding returned {len(embeddings)} vectors for "
                     f"{len(chunk)} inputs"
                 )
-            vectors.extend(item["values"] for item in embeddings)
+            for item in embeddings:
+                if not isinstance(item, dict):
+                    raise EmbeddingError("batch embedding contained a non-object item")
+                vectors.append(
+                    _float_values(cast(dict[str, object], item).get("values"))
+                )
         return vectors
 
     async def aclose(self) -> None:

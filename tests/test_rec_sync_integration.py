@@ -7,8 +7,11 @@ whether the records came from the synthetic generator or from a future Firestore
 export, which is the point of the source/loader split.
 """
 
+import math
 import os
+from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta, timezone
+from typing import cast
 
 import pytest
 
@@ -470,10 +473,18 @@ async def test_taste_vector_is_built_and_normalized():
             "FROM recommendations.user_taste WHERE user_id = $1",
             USER_A,
         )
-        vector = row["taste_embedding"]
-        vector = vector.to_list() if hasattr(vector, "to_list") else list(vector)
+        raw_vector = cast(object, row["taste_embedding"])
+        to_list = cast(
+            Callable[[], list[float]] | None,
+            getattr(raw_vector, "to_list", None),
+        )
+        vector = (
+            to_list()
+            if to_list is not None
+            else [float(value) for value in cast(Iterable[float], raw_vector)]
+        )
 
-        norm = sum(v * v for v in vector) ** 0.5
+        norm = math.sqrt(sum(v * v for v in vector))
         assert norm == pytest.approx(1.0, abs=1e-6), "must be L2-normalized"
         assert set(row["seed_item_ids"]) == {ids["x"], ids["y"], ids["z"]}
     finally:

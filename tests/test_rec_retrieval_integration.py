@@ -8,6 +8,7 @@ afterwards, so it does not depend on a backfill having run and cannot disturb
 loaded catalog data.
 """
 
+import math
 import os
 
 import pytest
@@ -48,16 +49,16 @@ DIM = 768
 PREFIX = "__ret__"
 
 
-def vec(components: dict) -> list:
+def vec(components: dict[int, float]) -> list[float]:
     """Build an L2-normalized vector from {dimension: weight}."""
     vector = [0.0] * DIM
     for index, weight in components.items():
         vector[index] = float(weight)
-    norm = sum(value * value for value in vector) ** 0.5
+    norm = math.sqrt(sum(value * value for value in vector))
     return [value / norm for value in vector] if norm else vector
 
 
-def unit(index: int) -> list:
+def unit(index: int) -> list[float]:
     return vec({index: 1.0})
 
 

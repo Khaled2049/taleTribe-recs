@@ -17,7 +17,8 @@ passthrough in creditProxy, not a quiet unmetered path here.
 import json
 import logging
 import re
-from typing import Any, AsyncIterator, Dict, List, Optional
+from collections.abc import Mapping
+from typing import AsyncIterator, List, Optional, cast
 
 import httpx
 from tenacity import (
@@ -51,6 +52,26 @@ class LLMResponseError(LLMError):
     not the JSON shape that was asked for)."""
 
 
+JsonObject = dict[str, object]
+
+
+def _as_object(value: object) -> JsonObject:
+    if not isinstance(value, dict):
+        return {}
+    raw = cast(dict[object, object], value)
+    return {str(key): item for key, item in raw.items()}
+
+
+def _as_list(value: object | None) -> list[object]:
+    return list(cast(list[object], value)) if isinstance(value, list) else []
+
+
+def _as_int(value: object | None) -> int:
+    if isinstance(value, (str, bytes, int, float)):
+        return int(value)
+    return 0
+
+
 class TokenUsage:
     """Running token total, so a 15k-record backfill can report what it spent."""
 
@@ -59,16 +80,16 @@ class TokenUsage:
         self.output_tokens = 0
         self.calls = 0
 
-    def add(self, metadata: Optional[dict]) -> None:
+    def add(self, metadata: JsonObject | None) -> None:
         self.calls += 1
         if not metadata:
             return
-        self.prompt_tokens += int(metadata.get("promptTokenCount") or 0)
+        self.prompt_tokens += _as_int(metadata.get("promptTokenCount"))
         # candidatesTokenCount excludes thinking tokens, which are billed as
         # output; totalTokenCount - prompt captures both.
-        total = int(metadata.get("totalTokenCount") or 0)
-        prompt = int(metadata.get("promptTokenCount") or 0)
-        candidates = int(metadata.get("candidatesTokenCount") or 0)
+        total = _as_int(metadata.get("totalTokenCount"))
+        prompt = _as_int(metadata.get("promptTokenCount"))
+        candidates = _as_int(metadata.get("candidatesTokenCount"))
         self.output_tokens += max(candidates, total - prompt)
 
     def estimated_usd(
@@ -81,7 +102,7 @@ class TokenUsage:
             + self.output_tokens / 1_000_000 * output_per_million
         )
 
-    def as_dict(self) -> dict:
+    def as_dict(self) -> dict[str, int | float]:
         return {
             "calls": self.calls,
             "prompt_tokens": self.prompt_tokens,
@@ -90,21 +111,26 @@ class TokenUsage:
         }
 
 
-def _extract_text(payload: dict) -> str:
+def _extract_text(payload: JsonObject) -> str:
     """Pull the text out of a generateContent response, with useful errors.
 
     An empty candidate list means the prompt was blocked; a MAX_TOKENS finish
     reason on a JSON call means the object is truncated and unparseable. Both
     deserve a specific message rather than a KeyError.
     """
-    candidates = payload.get("candidates") or []
+    candidates = _as_list(payload.get("candidates"))
     if not candidates:
-        feedback = payload.get("promptFeedback") or {}
+        feedback = _as_object(payload.get("promptFeedback") or {})
         raise LLMResponseError(f"no candidates returned (promptFeedback={feedback})")
 
-    candidate = candidates[0]
-    parts = (candidate.get("content") or {}).get("parts") or []
-    text = "".join(part.get("text", "") for part in parts)
+    candidate = _as_object(candidates[0])
+    content = _as_object(candidate.get("content") or {})
+    parts = _as_list(content.get("parts"))
+    text = "".join(
+        value
+        for part in parts
+        if isinstance((value := _as_object(part).get("text")), str)
+    )
 
     if not text:
         raise LLMResponseError(
@@ -145,9 +171,9 @@ class GeminiClient:
         system: Optional[str],
         max_output_tokens: int,
         temperature: float,
-        response_schema: Optional[dict],
-    ) -> dict:
-        generation_config: Dict[str, Any] = {
+        response_schema: Mapping[str, object] | None,
+    ) -> JsonObject:
+        generation_config: JsonObject = {
             "maxOutputTokens": max_output_tokens,
             "temperature": temperature,
         }
@@ -158,7 +184,7 @@ class GeminiClient:
             generation_config["responseMimeType"] = "application/json"
             generation_config["responseSchema"] = response_schema
 
-        body: Dict[str, Any] = {
+        body: JsonObject = {
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": generation_config,
         }
@@ -173,7 +199,7 @@ class GeminiClient:
         before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True,
     )
-    async def _post(self, url: str, body: dict) -> dict:
+    async def _post(self, url: str, body: JsonObject) -> JsonObject:
         try:
             response = await self._client.post(
                 url, headers={"x-goog-api-key": self._api_key}, json=body
@@ -191,8 +217,8 @@ class GeminiClient:
                 f"generation rejected with {response.status_code}: "
                 f"{response.text[:200]}"
             )
-        payload = response.json()
-        self.usage.add(payload.get("usageMetadata"))
+        payload = _as_object(cast(object, response.json()))
+        self.usage.add(_as_object(payload.get("usageMetadata") or {}))
         return payload
 
     async def generate_text(
@@ -213,11 +239,11 @@ class GeminiClient:
         self,
         prompt: str,
         *,
-        response_schema: dict,
+        response_schema: Mapping[str, object],
         system: Optional[str] = None,
         max_output_tokens: int = 2048,
         temperature: float = 0.2,
-    ) -> Any:
+    ) -> object:
         """Generate and parse structured JSON.
 
         Low temperature by default: the normalization pass wants consistent,
@@ -230,7 +256,7 @@ class GeminiClient:
         text = _extract_text(payload)
         cleaned = _FENCE.sub("", text).strip()
         try:
-            return json.loads(cleaned)
+            return cast(object, json.loads(cleaned))
         except json.JSONDecodeError as exc:
             raise LLMResponseError(
                 f"model did not return valid JSON ({exc}): {cleaned[:300]}"
@@ -275,19 +301,21 @@ class GeminiClient:
                     if not raw or raw == "[DONE]":
                         continue
                     try:
-                        chunk = json.loads(raw)
+                        chunk = _as_object(cast(object, json.loads(raw)))
                     except json.JSONDecodeError:
                         logger.warning("stream_chunk_unparseable chunk=%r", raw[:120])
                         continue
 
                     if "usageMetadata" in chunk:
-                        self.usage.add(chunk["usageMetadata"])
+                        self.usage.add(_as_object(chunk["usageMetadata"]))
 
-                    for candidate in chunk.get("candidates") or []:
-                        parts = (candidate.get("content") or {}).get("parts") or []
+                    for candidate_value in _as_list(chunk.get("candidates")):
+                        candidate = _as_object(candidate_value)
+                        content = _as_object(candidate.get("content") or {})
+                        parts = _as_list(content.get("parts"))
                         for part in parts:
-                            text = part.get("text")
-                            if text:
+                            text = _as_object(part).get("text")
+                            if isinstance(text, str) and text:
                                 yield text
         except httpx.RequestError as exc:
             raise LLMTransientError(f"stream request failed: {exc}") from exc

@@ -9,6 +9,7 @@ anywhere. So the historical request shape is pinned byte for byte.
 """
 
 import os
+from typing import Protocol, cast
 
 import pytest
 from tenacity import wait_none
@@ -27,6 +28,22 @@ from embedding_provider import (  # noqa: E402
 )
 
 pytestmark = pytest.mark.unit
+
+
+class _RetryPredicate(Protocol):
+    exception_types: type[BaseException] | tuple[type[BaseException], ...]
+
+
+class _RetryController(Protocol):
+    reraise: bool
+    retry: _RetryPredicate
+    stop: object
+    wait: object
+
+
+def _post_retry() -> _RetryController:
+    wrapped = cast(object, GoogleAIEmbeddingProvider._post)
+    return cast(_RetryController, getattr(wrapped, "retry"))
 
 
 class _FakeResponse:
@@ -323,7 +340,7 @@ def test_retry_is_bounded():
     retry for hours."""
     from tenacity.stop import stop_after_attempt, stop_any
 
-    retry_state = GoogleAIEmbeddingProvider._post.retry
+    retry_state = _post_retry()
 
     assert retry_state.reraise is True
 
@@ -345,7 +362,7 @@ def test_retry_is_bounded():
 
 @pytest.mark.parametrize("status", [429, 500, 502, 503])
 async def test_transient_statuses_are_retried(status, monkeypatch):
-    monkeypatch.setattr(GoogleAIEmbeddingProvider._post.retry, "wait", wait_none())
+    monkeypatch.setattr(_post_retry(), "wait", wait_none())
     provider = _provider(
         [
             _FakeResponse(status_code=status, text="slow down"),
@@ -362,7 +379,7 @@ async def test_transient_statuses_are_retried(status, monkeypatch):
 @pytest.mark.parametrize("status", [400, 401, 403, 404])
 async def test_permanent_statuses_fail_immediately(status, monkeypatch):
     """Retrying a bad API key just burns the backfill's time budget."""
-    monkeypatch.setattr(GoogleAIEmbeddingProvider._post.retry, "wait", wait_none())
+    monkeypatch.setattr(_post_retry(), "wait", wait_none())
     provider = _provider([_FakeResponse(status_code=status, text="nope")])
 
     with pytest.raises(EmbeddingError) as exc_info:
@@ -375,7 +392,7 @@ async def test_permanent_statuses_fail_immediately(status, monkeypatch):
 async def test_network_errors_are_transient(monkeypatch):
     import httpx
 
-    monkeypatch.setattr(GoogleAIEmbeddingProvider._post.retry, "wait", wait_none())
+    monkeypatch.setattr(_post_retry(), "wait", wait_none())
     provider = _provider(
         [
             httpx.ConnectError("connection refused"),
@@ -390,7 +407,7 @@ async def test_network_errors_are_transient(monkeypatch):
 
 
 async def test_retry_eventually_gives_up_and_reraises(monkeypatch):
-    monkeypatch.setattr(GoogleAIEmbeddingProvider._post.retry, "wait", wait_none())
+    monkeypatch.setattr(_post_retry(), "wait", wait_none())
     provider = _provider([_FakeResponse(status_code=503, text="down")] * 10)
 
     with pytest.raises(EmbeddingTransientError, match="503"):

@@ -18,7 +18,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Protocol, cast
 
 import structlog
 from fastapi import FastAPI, HTTPException, Request
@@ -35,6 +35,10 @@ from embedding_provider import (
 )
 from rate_limit import PerUserRateLimiter
 from recommendation_engine.config import RecSettings
+from recommendation_engine.app_state import (
+    recommendation_app_state,
+    recommendation_state,
+)
 from recommendation_engine.db import Database
 from recommendation_engine.embeddings import QueryEmbedder
 from recommendation_engine.env import REPO_ROOT, load_env
@@ -43,7 +47,18 @@ from recommendation_engine.llm import build_client
 from recommendation_engine.retrieval import Retriever
 from recommendation_engine.routes import build_router
 
-logger = structlog.get_logger(__name__)
+
+class _StructuredLogger(Protocol):
+    def debug(self, event: str, **values: object) -> None: ...
+
+    def info(self, event: str, **values: object) -> None: ...
+
+    def warning(self, event: str, **values: object) -> None: ...
+
+    def error(self, event: str, **values: object) -> None: ...
+
+
+logger = cast(_StructuredLogger, structlog.get_logger(__name__))
 
 
 def _configure_environment() -> Path:
@@ -80,8 +95,9 @@ async def verify_internal_token(request: Request) -> None:
     (RECS_SERVICE_URL), then requires the token's email claim to be on the
     configured allowlist.
     """
-    audience: Optional[str] = request.app.state.oidc_audience
-    allowed_callers: frozenset = request.app.state.allowed_callers
+    state = recommendation_state(request)
+    audience: Optional[str] = state.oidc_audience
+    allowed_callers = state.allowed_callers
     if not audience:
         return
 
@@ -100,7 +116,7 @@ async def verify_internal_token(request: Request) -> None:
     try:
         claims = google_id_token.verify_oauth2_token(
             token,
-            request.app.state.google_auth_request,  # cached — not created per call
+            state.google_auth_request,  # cached — not created per call
             audience=audience,
         )
         caller_email = claims.get("email")
@@ -154,17 +170,16 @@ def create_app() -> FastAPI:
         # The pool is the one piece of startup that can fail for an operational
         # reason (DB down, wrong DSN). Fail loudly here rather than on the first
         # request: Cloud Run's startup probe then reports the deploy as broken.
-        await app.state.db.connect()
+        state = recommendation_app_state(app)
+        await state.db.connect()
         try:
             yield
         finally:
-            await app.state.db.aclose()
-            embedder = getattr(app.state, "embedder", None)
-            if embedder is not None and hasattr(embedder, "aclose"):
-                await embedder.aclose()
-            llm = getattr(app.state, "llm", None)
-            if llm is not None:
-                await llm.aclose()
+            await state.db.aclose()
+            if state.embedder is not None:
+                await state.embedder.aclose()
+            if state.llm is not None:
+                await state.llm.aclose()
 
     app = FastAPI(
         title="TaleTribe Recommendation Service",
@@ -183,21 +198,22 @@ def create_app() -> FastAPI:
         allow_headers=["Content-Type", "Authorization", "X-Firebase-Token"],
     )
 
-    app.state.settings = settings
-    app.state.oidc_audience = settings.oidc_audience
-    app.state.allowed_callers = settings.allowed_callers
-    app.state.google_auth_request = google_requests.Request()
+    state = recommendation_app_state(app)
+    state.settings = settings
+    state.oidc_audience = settings.oidc_audience
+    state.allowed_callers = settings.allowed_callers
+    state.google_auth_request = google_requests.Request()
 
-    if app.state.oidc_audience:
-        logger.info("oidc_audience_set", audience=app.state.oidc_audience)
-    if app.state.allowed_callers:
+    if state.oidc_audience:
+        logger.info("oidc_audience_set", audience=state.oidc_audience)
+    if state.allowed_callers:
         logger.info(
             "oidc_allowed_callers",
-            count=len(app.state.allowed_callers),
-            callers=sorted(app.state.allowed_callers),
+            count=len(state.allowed_callers),
+            callers=sorted(state.allowed_callers),
         )
 
-    app.state.db = Database(
+    state.db = Database(
         write_dsn=settings.write_dsn,
         read_dsn=settings.read_dsn,
         pool_min=settings.recs_db_pool_min,
@@ -207,25 +223,23 @@ def create_app() -> FastAPI:
     # Two buckets. Ranking is one DB round trip and can be generous; HyDE and
     # explanations spend Gemini tokens on a path that deliberately bypasses
     # creditProxy, so the cache and this bucket are the only cost controls.
-    app.state.rate_limiter = PerUserRateLimiter(
-        settings.max_requests_per_minute_per_user
-    )
-    app.state.llm_rate_limiter = PerUserRateLimiter(
+    state.rate_limiter = PerUserRateLimiter(settings.max_requests_per_minute_per_user)
+    state.llm_rate_limiter = PerUserRateLimiter(
         settings.max_llm_requests_per_minute_per_user
     )
 
     # Shared with the story agent so the 768-dim contract has one definition.
     # A dimension mismatch here means every vector written is unqueryable
     # against the HNSW index, so it is asserted at startup, not at query time.
-    app.state.embedder = get_embedding_provider(settings.google_ai_studio_api_key)
-    verify_embedding_dimension(app.state.embedder)
+    state.embedder = get_embedding_provider(settings.google_ai_studio_api_key)
+    verify_embedding_dimension(state.embedder)
     # Wraps the provider with RETRIEVAL_QUERY/RETRIEVAL_DOCUMENT asymmetry and an
     # LRU over queries — ad-hoc prompts repeat heavily across users, and each hit
     # removes an 80-250ms round trip and a token charge from the request path.
-    app.state.query_embedder = QueryEmbedder(app.state.embedder)
+    state.query_embedder = QueryEmbedder(state.embedder)
 
-    app.state.retriever = Retriever(
-        app.state.db,
+    state.retriever = Retriever(
+        state.db,
         ef_search=settings.recs_hnsw_ef_search,
         max_scan_tuples=settings.recs_hnsw_max_scan_tuples,
         statement_timeout_ms=settings.recs_statement_timeout_ms,
@@ -234,12 +248,12 @@ def create_app() -> FastAPI:
     # Direct Gemini, not creditProxy — required for token-by-token streaming and
     # structured output. None when no key is configured, in which case ranking
     # still works and only HyDE/explanations are unavailable.
-    app.state.llm = (
+    state.llm = (
         build_client(settings.google_ai_studio_api_key, settings.recs_gemini_model)
         if settings.recs_enable_explanations or settings.recs_enable_hyde
         else None
     )
-    app.state.explanation_cache = ExplanationCache(app.state.db)
+    state.explanation_cache = ExplanationCache(state.db)
 
     app.include_router(build_router(verify_internal_token), tags=["Recommendations"])
 
@@ -277,7 +291,8 @@ def create_app() -> FastAPI:
         wrong dimension all produce empty or degraded results rather than errors,
         so each is checked explicitly and reflected in the status code.
         """
-        embedder = app.state.embedder
+        state = recommendation_app_state(app)
+        embedder = state.embedder
         embed_dim = embedder.dimension if embedder is not None else None
         expected_dim = settings.embedding_dimension
 
@@ -287,12 +302,12 @@ def create_app() -> FastAPI:
             "embedder": type(embedder).__name__ if embedder else None,
             "embedding_dimension": embed_dim,
             "embedding_dimension_ok": embed_dim == expected_dim,
-            "query_cache": app.state.query_embedder.stats(),
+            "query_cache": state.query_embedder.stats(),
             "database": {"connected": False},
         }
 
         try:
-            payload["database"] = await app.state.db.health()
+            payload["database"] = await state.db.health()
         except Exception as exc:
             logger.error("health_db_check_failed", error=str(exc))
             payload["database"] = {"connected": False, "error": str(exc)}
@@ -318,5 +333,5 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
 
-    port = int(os.getenv("PORT", str(app.state.settings.port)))
+    port = int(os.getenv("PORT", str(recommendation_app_state(app).settings.port)))
     uvicorn.run(app, host="0.0.0.0", port=port)

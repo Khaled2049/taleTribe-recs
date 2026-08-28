@@ -31,7 +31,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple, cast
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +105,7 @@ def parse_genres(raw: str) -> List[str]:
     if not raw:
         return []
     try:
-        parsed = json.loads(raw)
+        parsed = cast(object, json.loads(raw))
     except (json.JSONDecodeError, ValueError):
         logger.debug("unparseable_genre_field", extra={"raw": raw[:120]})
         return []
@@ -113,7 +113,8 @@ def parse_genres(raw: str) -> List[str]:
         return []
     # Freebase MIDs are stable identifiers but meaningless to a reader or an
     # embedding model; only the labels are kept.
-    return [str(name).strip() for name in parsed.values() if str(name).strip()]
+    parsed_dict = cast(dict[object, object], parsed)
+    return [str(name).strip() for name in parsed_dict.values() if str(name).strip()]
 
 
 def parse_year(raw: str) -> Optional[int]:

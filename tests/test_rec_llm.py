@@ -6,6 +6,7 @@ responses, including a scripted SSE stream.
 
 import json
 import os
+from typing import Protocol, cast
 
 import httpx
 import pytest
@@ -25,6 +26,15 @@ from recommendation_engine.llm import (  # noqa: E402
 )
 
 pytestmark = pytest.mark.unit
+
+
+class _RetryController(Protocol):
+    wait: object
+
+
+def _post_retry() -> _RetryController:
+    wrapped = cast(object, GeminiClient._post)
+    return cast(_RetryController, getattr(wrapped, "retry"))
 
 
 def _candidate(text, finish_reason="STOP"):
@@ -212,7 +222,7 @@ async def test_generate_json_defaults_to_low_temperature():
 
 @pytest.mark.parametrize("status", [429, 500, 503])
 async def test_transient_statuses_retry(status, monkeypatch):
-    monkeypatch.setattr(GeminiClient._post.retry, "wait", wait_none())
+    monkeypatch.setattr(_post_retry(), "wait", wait_none())
     client = _client(
         [
             _FakeResponse(status_code=status, text="busy"),
@@ -226,7 +236,7 @@ async def test_transient_statuses_retry(status, monkeypatch):
 
 @pytest.mark.parametrize("status", [400, 401, 403])
 async def test_permanent_statuses_do_not_retry(status, monkeypatch):
-    monkeypatch.setattr(GeminiClient._post.retry, "wait", wait_none())
+    monkeypatch.setattr(_post_retry(), "wait", wait_none())
     client = _client([_FakeResponse(status_code=status, text="bad key")])
 
     with pytest.raises(LLMError) as exc_info:
@@ -237,14 +247,14 @@ async def test_permanent_statuses_do_not_retry(status, monkeypatch):
 
 
 async def test_network_error_is_transient(monkeypatch):
-    monkeypatch.setattr(GeminiClient._post.retry, "wait", wait_none())
+    monkeypatch.setattr(_post_retry(), "wait", wait_none())
     client = _client([httpx.ConnectError("refused"), _FakeResponse(_candidate("ok"))])
 
     assert await client.generate_text("p") == "ok"
 
 
 async def test_retry_is_bounded(monkeypatch):
-    monkeypatch.setattr(GeminiClient._post.retry, "wait", wait_none())
+    monkeypatch.setattr(_post_retry(), "wait", wait_none())
     client = _client([_FakeResponse(status_code=503, text="down")] * 10)
 
     with pytest.raises(LLMTransientError):

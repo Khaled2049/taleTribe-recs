@@ -18,23 +18,26 @@ round trip — for a 50-candidate pool that is a 50x50 similarity matrix, a few
 hundred microseconds in numpy.
 """
 
-from typing import Iterable, List, Optional, Sequence
+import math
+from typing import Iterable, List, Optional, Sequence, cast
 
 import numpy as np
+import numpy.typing as npt
 
 DEFAULT_LAMBDA = 0.70
+FloatArray = npt.NDArray[np.float64]
 
 
-def _normalize_rows(matrix: np.ndarray) -> np.ndarray:
+def _normalize_rows(matrix: FloatArray) -> FloatArray:
     """L2-normalize so a dot product is a cosine.
 
     Zero-norm rows are left alone rather than producing NaN — a missing embedding
     should make an item maximally *dissimilar* to everything (so diversity never
     blocks it), not poison the whole matrix.
     """
-    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    norms = cast(FloatArray, np.linalg.norm(matrix, axis=1, keepdims=True))
     norms[norms == 0] = 1.0
-    return matrix / norms
+    return cast(FloatArray, matrix / norms)
 
 
 def mmr_select(
@@ -54,29 +57,31 @@ def mmr_select(
     k = min(int(k), n)
     lambda_ = max(0.0, min(1.0, float(lambda_)))
 
-    relevance = np.asarray(scores, dtype=np.float64)
+    relevance = cast(FloatArray, np.asarray(scores, dtype=np.float64))
 
     if lambda_ >= 1.0 or not embeddings:
         # No diversity pressure — plain score order. Short-circuited so the
         # degenerate case does no matrix work.
-        return list(np.argsort(-relevance, kind="stable")[:k])
+        return sorted(range(n), key=lambda index: -scores[index])[:k]
 
-    matrix = _normalize_rows(np.asarray(embeddings, dtype=np.float64))
-    similarity = matrix @ matrix.T
+    matrix = _normalize_rows(cast(FloatArray, np.asarray(embeddings, dtype=np.float64)))
+    similarity = cast(FloatArray, matrix @ matrix.T)
 
     selected: List[int] = [int(np.argmax(relevance))]
     # Running max similarity to the selected set, updated incrementally: an O(n)
     # update per pick instead of rescanning the selected set each time.
-    max_sim = similarity[selected[0]].copy()
+    first_similarity_row = cast(FloatArray, similarity[selected[0]])
+    max_sim = first_similarity_row.copy()
 
     while len(selected) < k:
-        objective = lambda_ * relevance - (1.0 - lambda_) * max_sim
+        objective = cast(FloatArray, lambda_ * relevance - (1.0 - lambda_) * max_sim)
         objective[selected] = -np.inf
         nxt = int(np.argmax(objective))
-        if not np.isfinite(objective[nxt]):
+        if not math.isfinite(cast(float, objective[nxt])):
             break
         selected.append(nxt)
-        np.maximum(max_sim, similarity[nxt], out=max_sim)
+        next_similarity_row = cast(FloatArray, similarity[nxt])
+        max_sim = cast(FloatArray, np.maximum(max_sim, next_similarity_row))
 
     return selected
 
@@ -132,15 +137,16 @@ def intra_list_diversity(
     """
     if len(embeddings) < 2:
         return None
-    matrix = _normalize_rows(np.asarray(embeddings, dtype=np.float64))
-    similarity = matrix @ matrix.T
-    n = similarity.shape[0]
+    matrix = _normalize_rows(cast(FloatArray, np.asarray(embeddings, dtype=np.float64)))
+    similarity = cast(FloatArray, matrix @ matrix.T)
+    n = len(similarity)
     # Upper triangle only — the diagonal is self-similarity and the matrix is
     # symmetric, so including either would bias the mean upward.
     upper = similarity[np.triu_indices(n, k=1)]
     if upper.size == 0:
         return None
-    return float(1.0 - np.clip(upper.mean(), -1.0, 1.0))
+    mean_similarity = cast(float, upper.mean())
+    return 1.0 - max(-1.0, min(1.0, mean_similarity))
 
 
 __all__: Iterable[str] = [

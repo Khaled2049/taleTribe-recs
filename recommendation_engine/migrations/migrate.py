@@ -23,7 +23,7 @@ import logging
 import re
 import sys
 from pathlib import Path
-from typing import List, NamedTuple, Optional
+from typing import List, NamedTuple, Optional, cast
 
 import asyncpg
 
@@ -165,13 +165,18 @@ def _resolve_dsn(explicit: Optional[str]) -> str:
     return RecSettings().write_dsn
 
 
+class _MigrationArgs(argparse.Namespace):
+    dsn: str | None
+    status: bool
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Apply recommendations migrations.")
     parser.add_argument("--dsn", help="Postgres DSN (default: RECS_DATABASE_URL)")
     parser.add_argument(
         "--status", action="store_true", help="Report applied/pending and exit"
     )
-    args = parser.parse_args(argv)
+    args = cast(_MigrationArgs, parser.parse_args(argv))
 
     try:
         asyncio.run(run(_resolve_dsn(args.dsn), status_only=args.status))

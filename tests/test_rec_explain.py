@@ -5,6 +5,7 @@ No network: the Gemini client is a fake.
 
 import json
 import os
+from typing import cast
 
 import pytest
 
@@ -262,7 +263,10 @@ def _parse_sse(frames):
             continue
         lines = frame.strip().split("\n")
         event = lines[0].removeprefix("event: ")
-        data = json.loads(lines[1].removeprefix("data: "))
+        data = cast(
+            dict[str, object],
+            cast(object, json.loads(lines[1].removeprefix("data: "))),
+        )
         events.append((event, data))
     return events
 

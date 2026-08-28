@@ -15,7 +15,10 @@ the source are separated.
 
 import logging
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, cast
+
+import numpy as np
+import numpy.typing as npt
 
 from recommendation_engine.scoring import ScoringConfig, popularity
 
@@ -25,6 +28,7 @@ logger = logging.getLogger(__name__)
 # anything. Below it, behavioral mode should fall back to popularity rather than
 # extrapolate a personality from two data points.
 MIN_SIGNALS_FOR_TASTE = 3
+FloatArray = npt.NDArray[np.float64]
 
 
 @dataclass
@@ -161,8 +165,6 @@ async def rebuild_user_taste(pool) -> RefreshStats:
         logger.info("no interactions; user_taste left unchanged")
         return stats
 
-    import numpy as np
-
     by_user: dict = {}
     for row in rows:
         entry = by_user.setdefault(
@@ -190,10 +192,10 @@ async def rebuild_user_taste(pool) -> RefreshStats:
             stats.tastes_skipped_thin += 1
             continue
 
-        matrix = np.asarray(entry["vectors"], dtype=np.float64)
-        weights = np.asarray(entry["weights"], dtype=np.float64)
-        mean = (matrix * weights[:, None]).sum(axis=0) / weights.sum()
-        norm = np.linalg.norm(mean)
+        matrix = cast(FloatArray, np.asarray(entry["vectors"], dtype=np.float64))
+        weights = cast(FloatArray, np.asarray(entry["weights"], dtype=np.float64))
+        mean = cast(FloatArray, (matrix * weights[:, None]).sum(axis=0) / weights.sum())
+        norm = cast(float, np.linalg.norm(mean))
         if norm == 0:
             stats.tastes_skipped_thin += 1
             continue
@@ -201,7 +203,7 @@ async def rebuild_user_taste(pool) -> RefreshStats:
         payload.append(
             (
                 user_id,
-                (mean / norm).tolist(),
+                cast(list[float], (mean / norm).tolist()),
                 sorted(entry["seeds"]),
                 sorted(entry["bad"]),
                 # Reported as the weighted total so the endpoint's threshold means

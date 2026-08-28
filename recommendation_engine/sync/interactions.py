@@ -42,10 +42,10 @@ Field notes, each with a reason:
 
 import json
 import logging
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple, cast
 
 from recommendation_engine.scoring import is_negative_signal, seed_engagement_weight
 
@@ -84,13 +84,27 @@ class InteractionRecord:
     total_chapters: Optional[int] = None
 
     def to_json(self) -> str:
-        data = asdict(self)
-        data["occurred_at"] = self.occurred_at.astimezone(timezone.utc).isoformat()
+        data: dict[str, object] = {
+            "user_id": self.user_id,
+            "source": self.source,
+            "source_id": self.source_id,
+            "kind": self.kind,
+            "occurred_at": self.occurred_at.astimezone(timezone.utc).isoformat(),
+        }
+        if self.value is not None:
+            data["value"] = self.value
+        if self.chapter_index is not None:
+            data["chapter_index"] = self.chapter_index
+        if self.total_chapters is not None:
+            data["total_chapters"] = self.total_chapters
         return json.dumps({k: v for k, v in data.items() if v is not None})
 
     @classmethod
     def from_json(cls, line: str) -> "InteractionRecord":
-        raw = json.loads(line)
+        parsed = cast(object, json.loads(line))
+        if not isinstance(parsed, dict):
+            raise ValueError("interaction record must be a JSON object")
+        raw = cast(dict[str, object], parsed)
         return cls(
             user_id=str(raw["user_id"]),
             source=str(raw["source"]),
@@ -98,8 +112,8 @@ class InteractionRecord:
             kind=str(raw["kind"]),
             occurred_at=_parse_ts(raw["occurred_at"]),
             value=(None if raw.get("value") is None else float(raw["value"])),
-            chapter_index=raw.get("chapter_index"),
-            total_chapters=raw.get("total_chapters"),
+            chapter_index=_optional_int(raw.get("chapter_index")),
+            total_chapters=_optional_int(raw.get("total_chapters")),
         )
 
     @property
@@ -119,7 +133,11 @@ class InteractionRecord:
         return on_last_chapter and scrolled
 
 
-def _parse_ts(value) -> datetime:
+def _optional_int(value: object | None) -> int | None:
+    return None if value is None else int(value)
+
+
+def _parse_ts(value: object) -> datetime:
     if isinstance(value, datetime):
         dt = value
     else:

@@ -8,7 +8,9 @@ real SQL and real ranking without spending tokens. Seeds fixtures under a
 """
 
 import json
+import math
 import os
+from typing import cast
 
 import pytest
 
@@ -42,11 +44,11 @@ DIM = 768
 PREFIX = "__route__"
 
 
-def vec(components: dict) -> list:
+def vec(components: dict[int, float]) -> list[float]:
     v = [0.0] * DIM
     for i, w in components.items():
         v[i] = float(w)
-    norm = sum(x * x for x in v) ** 0.5
+    norm = math.sqrt(sum(x * x for x in v))
     return [x / norm for x in v] if norm else v
 
 
@@ -496,14 +498,21 @@ def test_stream_emits_sse_frames_tagged_by_item():
         assert "event: item_done" in body
         assert "event: done" in body
 
-        streamed = {}
+        streamed: dict[int, str] = {}
         for frame in body.split("\n\n"):
             lines = frame.strip().split("\n")
             if len(lines) < 2 or not lines[0].startswith("event: explanation"):
                 continue
-            data = json.loads(lines[1].removeprefix("data: "))
-            streamed.setdefault(data["item_id"], "")
-            streamed[data["item_id"]] += data["delta"]
+            parsed = cast(
+                dict[str, object],
+                cast(object, json.loads(lines[1].removeprefix("data: "))),
+            )
+            item_id = parsed.get("item_id")
+            delta = parsed.get("delta")
+            assert isinstance(item_id, int)
+            assert isinstance(delta, str)
+            streamed.setdefault(item_id, "")
+            streamed[item_id] += delta
 
         assert set(streamed) == {ids["a"], ids["b"]}
         assert all(text == "A stubbed reason." for text in streamed.values())
