@@ -1,14 +1,14 @@
 """Compose the text that actually gets embedded.
 
-**Raw plot summaries are never embedded.** A CMU summary averages 429 words of
-plot incident — who did what to whom, in order. Embedding that buries the signal
-a recommender ranks on (premise, themes, tone) under a mass of proper nouns and
-sequence. So every item is first normalized to a fixed schema — Title, Author,
-Genres, Core Premise, Key Themes/Tropes, Tone — and only that is embedded.
+**Raw prose is never embedded.** A story's text is plot incident — who did what
+to whom, in order. Embedding that buries the signal a recommender ranks on
+(premise, themes, tone) under a mass of proper nouns and sequence. So every item
+is first normalized to a fixed schema — Title, Author, Genres, Core Premise, Key
+Themes/Tropes, Tone — and only that is embedded.
 
-The template is a pure function with a stable sha, which is what makes the
-backfill resumable: a row whose `embed_input_sha` is unchanged does not need
-re-embedding, so a re-run after a crash or a partial load costs nothing.
+The template is a pure function with a stable sha, which is what makes ingest
+resumable: a row whose `embed_input_sha` is unchanged does not need re-embedding,
+so re-reading every published story on each poll costs nothing.
 """
 
 import hashlib

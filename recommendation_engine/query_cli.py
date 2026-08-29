@@ -48,10 +48,9 @@ def _print_table(result, show_scores: bool) -> None:
         f"{', DEGRADED' if result.degraded else ''})\n"
     )
     for position, item in enumerate(result.items, start=1):
-        flag = " [off-platform]" if item.off_platform else ""
         author = f" — {item.author}" if item.author else ""
         year = f" ({item.published_year})" if item.published_year else ""
-        print(f"{position:2d}. {item.score:.4f}  {item.title}{author}{year}{flag}")
+        print(f"{position:2d}. {item.score:.4f}  {item.title}{author}{year}")
         if item.genres:
             print(f"      genres: {', '.join(item.genres)}")
         if item.themes:
@@ -65,7 +64,7 @@ def _print_table(result, show_scores: bool) -> None:
                 f"      sem={breakdown['semantic']:.4f}*{weights['semantic']:.2f}  "
                 f"pop={breakdown['popularity']:.4f}*{weights['popularity']:.2f}  "
                 f"cf={breakdown['collaborative']:.4f}*{weights['collaborative']:.2f}  "
-                f"alpha={breakdown['alpha']:.2f}  src={breakdown['source_weight']:.2f}"
+                f"alpha={breakdown['alpha']:.2f}"
             )
     print()
 
@@ -75,7 +74,6 @@ class _QueryArgs(argparse.Namespace):
     text: str | None
     genre: list[str] | None
     theme: list[str] | None
-    source: list[str] | None
     max_words: int | None
     top_k: int
     scores: bool
@@ -98,9 +96,7 @@ async def run(args: _QueryArgs) -> int:
             )
         if not health.get("eligible_count"):
             print(
-                "the catalog is empty; load some records first:\n"
-                "  USE_MOCK=true python -m recommendation_engine.ingest.backfill "
-                "--limit 300 --skip-normalization",
+                "the catalog is empty; ingest published stories first",
                 file=sys.stderr,
             )
             return 1
@@ -156,7 +152,6 @@ async def run(args: _QueryArgs) -> int:
             filters=RetrievalFilters(
                 genres=args.genre or None,
                 themes=args.theme or None,
-                sources=args.source or None,
                 max_word_count=args.max_words,
                 exclude_ids=exclude,
             ),
@@ -183,12 +178,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--text", help="Free-text query (needs an embedder)")
     parser.add_argument("--genre", action="append", help="Filter by platform category")
     parser.add_argument("--theme", action="append", help="Filter by theme")
-    parser.add_argument(
-        "--source",
-        action="append",
-        choices=["platform", "cmu"],
-        help="Filter by source",
-    )
     parser.add_argument("--max-words", type=int, help="Maximum word count")
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument(

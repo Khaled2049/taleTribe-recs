@@ -13,7 +13,7 @@ enter a real measurement.
 
 ## Why it is generated in code rather than by a language model
 
-* It must reference `source_id`s that exist in *this* catalog.
+* It must reference `story_id`s that exist in *this* catalog.
 * It needs statistical structure a model will not hold over thousands of records:
   a **power-law** popularity distribution, per-reader genre/theme affinity, and the
   co-occurrence that emerges from readers sharing affinities.
@@ -69,8 +69,7 @@ REFERENCE_NOW = datetime(2026, 6, 1, tzinfo=timezone.utc)
 class CatalogItem:
     """The minimum a generator needs to know about a book."""
 
-    source: str
-    source_id: str
+    story_id: str
     genres: List[str] = field(default_factory=list)
     themes: List[str] = field(default_factory=list)
 
@@ -241,8 +240,7 @@ def generate(
 
             yield InteractionRecord(
                 user_id=persona.user_id,
-                source=item.source,
-                source_id=item.source_id,
+                story_id=item.story_id,
                 kind=KIND_PROGRESS,
                 occurred_at=occurred,
                 value=round(scroll, 3),
@@ -255,8 +253,7 @@ def generate(
             if rng.random() < min(0.95, like_probability):
                 yield InteractionRecord(
                     user_id=persona.user_id,
-                    source=item.source,
-                    source_id=item.source_id,
+                    story_id=item.story_id,
                     kind=KIND_LIKE,
                     occurred_at=occurred + timedelta(minutes=rng.randint(1, 240)),
                 )
@@ -269,8 +266,7 @@ def generate(
                 rating = max(1, min(5, int(round(score))))
                 yield InteractionRecord(
                     user_id=persona.user_id,
-                    source=item.source,
-                    source_id=item.source_id,
+                    story_id=item.story_id,
                     kind=KIND_RATING,
                     occurred_at=occurred + timedelta(hours=rng.randint(1, 72)),
                     value=float(rating),
@@ -297,15 +293,14 @@ def _sample_by_weight(pool, weights: Sequence[float], rng: random.Random) -> int
 async def load_catalog(pool, limit: Optional[int] = None) -> List[CatalogItem]:
     """Read the eligible catalog, which is what readers can plausibly interact with."""
     rows = await pool.fetch(
-        "SELECT source::text AS source, source_id, genres, themes "
+        "SELECT story_id, genres, themes "
         "FROM recommendations.items "
         "WHERE is_eligible AND embedding IS NOT NULL "
         "ORDER BY id" + (f" LIMIT {int(limit)}" if limit else "")
     )
     return [
         CatalogItem(
-            source=row["source"],
-            source_id=row["source_id"],
+            story_id=str(row["story_id"]),
             genres=list(row["genres"] or []),
             themes=list(row["themes"] or []),
         )

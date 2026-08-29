@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # and re-fetching would cost a second round trip; `sem_cos` is computed in SQL
 # because pgvector's operator is the authority on the distance metric.
 _SELECT_COLUMNS = """
-    i.id, i.source::text AS source, i.source_id, i.title, i.author,
+    i.id, i.story_id, i.title, i.author,
     i.genres, i.themes, i.tone, i.core_premise, i.published_year,
     i.word_count, i.embedding, i.embed_input_sha, i.updated_at,
     1 - (i.embedding <=> $1) AS sem_cos,
@@ -49,7 +49,6 @@ class RetrievalFilters:
     max_word_count: Optional[int] = None
     min_word_count: Optional[int] = None
     author: Optional[str] = None
-    sources: Optional[Sequence[str]] = None
     published_after: Optional[int] = None
     exclude_ids: Sequence[int] = field(default_factory=list)
 
@@ -61,13 +60,12 @@ class RetrievalFilters:
             self.max_word_count,
             self.min_word_count,
             f"%{self.author}%" if self.author else None,
-            list(self.sources) if self.sources else None,
             self.published_after,
             list(self.exclude_ids) if self.exclude_ids else [],
         ]
 
 
-# $1 query vector, $2..$9 filters, $10 limit.
+# $1 query vector, $2..$8 filters, $9 limit.
 _KNN_SQL = f"""
 SELECT {_SELECT_COLUMNS}
   FROM recommendations.items i
@@ -79,17 +77,16 @@ SELECT {_SELECT_COLUMNS}
    AND ($4::int IS NULL OR i.word_count IS NULL OR i.word_count <= $4::int)
    AND ($5::int IS NULL OR i.word_count IS NULL OR i.word_count >= $5::int)
    AND ($6::text IS NULL OR i.author ILIKE $6::text)
-   AND ($7::text[] IS NULL OR i.source::text = ANY($7::text[]))
-   AND ($8::int IS NULL OR i.published_year IS NULL OR i.published_year >= $8::int)
-   AND NOT (i.id = ANY($9::bigint[]))
+   AND ($7::int IS NULL OR i.published_year IS NULL OR i.published_year >= $7::int)
+   AND NOT (i.id = ANY($8::bigint[]))
  ORDER BY i.embedding <=> $1
- LIMIT $10
+ LIMIT $9
 """
 
 # Resolve a title/author the reader typed to catalog rows. Trigram similarity
 # rather than exact match because readers misremember titles and skip subtitles.
 _RESOLVE_SQL = """
-SELECT i.id, i.source::text AS source, i.source_id, i.title, i.author,
+SELECT i.id, i.story_id, i.title, i.author,
        i.embedding, i.genres, i.themes,
        GREATEST(
            similarity(i.title, $1),
@@ -227,7 +224,7 @@ class Retriever:
         async with self._db.read_pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT i.id, i.source::text AS source, i.source_id, i.title,
+                SELECT i.id, i.story_id, i.title,
                        i.author, i.genres, i.themes, i.tone, i.core_premise,
                        i.published_year, i.word_count, i.embedding,
                        i.embed_input_sha, i.updated_at,
@@ -242,11 +239,10 @@ class Retriever:
                    AND ($3::int IS NULL OR i.word_count IS NULL OR i.word_count <= $3::int)
                    AND ($4::int IS NULL OR i.word_count IS NULL OR i.word_count >= $4::int)
                    AND ($5::text IS NULL OR i.author ILIKE $5::text)
-                   AND ($6::text[] IS NULL OR i.source::text = ANY($6::text[]))
-                   AND ($7::int IS NULL OR i.published_year IS NULL OR i.published_year >= $7::int)
-                   AND NOT (i.id = ANY($8::bigint[]))
+                   AND ($6::int IS NULL OR i.published_year IS NULL OR i.published_year >= $6::int)
+                   AND NOT (i.id = ANY($7::bigint[]))
                  ORDER BY COALESCE(s.pop_score, 0) DESC, i.updated_at DESC
-                 LIMIT $9
+                 LIMIT $8
                 """,
                 *params,
                 int(limit),
@@ -256,15 +252,12 @@ class Retriever:
     async def catalog_stats(self) -> Dict[str, Any]:
         """Corpus-level values the popularity term needs.
 
-        Computed here rather than materialized because it is one aggregate over a
-        small table, and a stale platform count would make the CMU down-weight
-        lag the real catalog.
+        Computed here rather than materialized because it is two aggregates over
+        a small table.
         """
         async with self._db.read_pool.acquire() as conn:
             row = await conn.fetchrow("""
                 SELECT
-                    (SELECT COUNT(*) FROM recommendations.items
-                      WHERE source = 'platform' AND is_eligible) AS platform_item_count,
                     (SELECT AVG(avg_rating) FROM recommendations.item_stats
                       WHERE ratings_count > 0) AS global_mean_rating,
                     (SELECT PERCENTILE_CONT(0.95) WITHIN GROUP (

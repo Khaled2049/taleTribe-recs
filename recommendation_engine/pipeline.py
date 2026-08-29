@@ -41,8 +41,7 @@ class RankedItem:
     """One recommendation, with its score fully attributed."""
 
     id: int
-    source: str
-    source_id: str
+    story_id: str
     title: str
     author: Optional[str]
     genres: List[str]
@@ -55,20 +54,10 @@ class RankedItem:
     matched_query_count: int = 0
     embed_input_sha: Optional[str] = None
 
-    @property
-    def off_platform(self) -> bool:
-        """True for seed-corpus books, which are not readable on TaleTribe.
-
-        Surfaced so the UI can badge them. Recommending one without saying so is a
-        dead end for the reader.
-        """
-        return self.source != "platform"
-
     def as_dict(self, include_breakdown: bool = False) -> dict:
         payload = {
             "id": self.id,
-            "source": self.source,
-            "source_id": self.source_id,
+            "story_id": self.story_id,
             "title": self.title,
             "author": self.author,
             "genres": self.genres,
@@ -77,7 +66,6 @@ class RankedItem:
             "core_premise": self.core_premise,
             "published_year": self.published_year,
             "score": round(self.score, 6),
-            "off_platform": self.off_platform,
             "matched_query_count": self.matched_query_count,
         }
         if include_breakdown:
@@ -207,8 +195,6 @@ async def rank(
             popularity_score=float(row.get("pop_score") or 0.0),
             collaborative=cf.get(row["id"], 0.0),
             n_interactions=float(row.get("n_interactions") or 0),
-            source=row["source"],
-            platform_item_count=stats.platform_item_count,
             config=config,
         )
         row["score"] = breakdown.score
@@ -219,8 +205,7 @@ async def rank(
     items = [
         RankedItem(
             id=row["id"],
-            source=row["source"],
-            source_id=row["source_id"],
+            story_id=str(row["story_id"]),
             title=row["title"],
             author=row.get("author"),
             genres=list(row.get("genres") or []),

@@ -10,6 +10,7 @@ real SQL and real ranking without spending tokens. Seeds fixtures under a
 import json
 import math
 import os
+import uuid
 from typing import cast
 
 import pytest
@@ -27,11 +28,14 @@ os.environ["ENVIRONMENT"] = "development"
 os.environ["MAX_REQUESTS_PER_MINUTE_PER_USER"] = "500"
 os.environ["MAX_LLM_REQUESTS_PER_MINUTE_PER_USER"] = "500"
 
-import asyncpg  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
-from pgvector.asyncpg import register_vector  # noqa: E402
-
-from recommendation_engine.migrations import migrate  # noqa: E402
+import asyncpg
+from conftest import (
+    drop_stories,
+    require_recommendations_schema,
+    seed_stories,
+)
+from fastapi.testclient import TestClient
+from pgvector.asyncpg import register_vector
 
 pytestmark = [
     pytest.mark.integration,
@@ -110,27 +114,29 @@ async def _connect():
     return conn
 
 
+KEYS = [PREFIX + f[0] for f in FIXTURES]
+
+
 async def _seed():
-    await migrate.run(TEST_DSN)
+    await require_recommendations_schema(TEST_DSN)
     conn = await _connect()
     ids = {}
     try:
-        await conn.execute(
-            "DELETE FROM recommendations.items WHERE source_id LIKE $1", PREFIX + "%"
-        )
+        await drop_stories(conn, KEYS)
+        stories = await seed_stories(conn, KEYS)
         for suffix, title, author, genres, vector in FIXTURES:
             ids[suffix] = await conn.fetchval(
                 """
                 INSERT INTO recommendations.items (
-                    source, source_id, title, author, genres, themes, tone,
+                    story_id, title, author, genres, themes, tone,
                     core_premise, is_eligible, embed_input, embed_input_sha,
                     embedding, embed_task_type
-                ) VALUES ('cmu', $1, $2, $3, $4::text[], ARRAY['isolation'],
+                ) VALUES ($1::uuid, $2, $3, $4::text[], ARRAY['isolation'],
                           ARRAY['bleak'], 'A premise.', true, 'x', $5,
                           $6::vector, 'RETRIEVAL_DOCUMENT')
                 RETURNING id
                 """,
-                PREFIX + suffix,
+                stories[PREFIX + suffix],
                 title,
                 author,
                 genres,
@@ -145,9 +151,7 @@ async def _seed():
 async def _cleanup():
     conn = await _connect()
     try:
-        await conn.execute(
-            "DELETE FROM recommendations.items WHERE source_id LIKE $1", PREFIX + "%"
-        )
+        await drop_stories(conn, KEYS)
         await conn.execute(
             "DELETE FROM recommendations.explanation_cache WHERE explanation = $1",
             "A stubbed reason.",
@@ -305,7 +309,9 @@ def test_adhoc_returns_an_explanation_cache_key_per_item():
         asyncio.run(_cleanup())
 
 
-def test_adhoc_marks_off_platform_items():
+def test_adhoc_items_name_the_story_they_came_from():
+    """A client needs the story id to link anywhere. It replaced the old
+    `source`/`source_id` pair when the catalog became platform-only."""
     import asyncio
 
     asyncio.run(_seed())
@@ -317,7 +323,9 @@ def test_adhoc_marks_off_platform_items():
             )
         items = response.json()["data"]["items"]
 
-        assert any(item["off_platform"] for item in items)
+        assert items
+        assert all(uuid.UUID(item["story_id"]) for item in items)
+        assert not any("off_platform" in item for item in items)
     finally:
         asyncio.run(_cleanup())
 
@@ -328,8 +336,8 @@ def test_adhoc_marks_off_platform_items():
 
 
 def test_behavioral_falls_back_to_popular_without_a_taste_vector():
-    """Honest reporting: nothing populates user_taste until the Firestore signals
-    export exists, so this must say `popular` rather than imply personalization."""
+    """Honest reporting: a reader with no signals has no taste vector, so this
+    must say `popular` rather than imply personalization."""
     import asyncio
 
     asyncio.run(_seed())

@@ -55,21 +55,20 @@ near-identical books.
 
 ## What it's built on, and the state of it
 
-- **1,987 books** currently loaded, each with real premise/theme/tone metadata
-  derived by an LLM, and a real embedding.
-- Those come from the **CMU Book Summary Corpus** — 16,559 public-domain-ish book
-  summaries used as *cold-start scaffolding*. It's a stopgap: the service
-  automatically de-emphasises them as real TaleTribe stories are added, and they're
-  flagged `off_platform` so the UI can say "not on TaleTribe yet".
+- **Published TaleTribe stories only.** Each catalog row carries LLM-derived
+  premise/theme/tone metadata and an embedding, and keys back to the story by
+  `story_id`. A CMU bootstrap corpus used to share this catalog as cold-start
+  scaffolding; it has been removed.
 - **Postgres + pgvector** for storage and search, not a dedicated vector database.
-- Total cost to load 2,000 books: **$0.33**. The full 16.5k corpus projects to ~$2.40.
-  Per-recommendation cost is a rounding error.
+  The `recommendations` schema lives in story-data's database.
+- Per-recommendation cost is a rounding error; the spend is in ingest, which
+  embeds each story once and skips unchanged rows on re-run.
 
 ### What works today
 
 All five API endpoints, both recommendation modes, HyDE for free-text queries,
 explanations both batched and streamed, and the full three-term scoring formula.
-1,025 automated tests.
+431 automated tests.
 
 ### What is honestly not done
 
@@ -88,11 +87,10 @@ explanations both batched and streamed, and the full three-term scoring formula.
 
 ## Things product should know
 
-**CMU books are not readable on TaleTribe.** They exist so the recommender has
-enough of a "taste space" to be useful on day one, and so a reader can say "I liked
-Dune" about a book we'll never host. Any surface showing them needs to mark them
-clearly, or a reader taps through to nothing. The API returns `off_platform: true`
-on every such item.
+**Every recommendation is a readable TaleTribe story.** That was not true while
+the CMU corpus was in the catalog, and the API carried an `off_platform` flag so
+a UI could badge the ones that were dead ends. Both are gone; nothing needs
+badging now.
 
 **Explanations are not credit-metered.** They call Gemini directly rather than going
 through creditProxy, because that's the only way to get true token-by-token
@@ -104,8 +102,29 @@ readers is scored **100% on content similarity**. It is never penalised for bein
 new. Popularity only begins to matter once a book has at least five real
 interactions, and even at maximum it can only move a score by a quarter.
 
-**The seed corpus is licensed CC BY-SA.** LLM-derived premises are plausibly
-derivative works. If premise text becomes user-visible, attribution needs settling.
+**Cold start is a real, open product problem — and removing the seed corpus made it
+sharper.** A CMU book-summary corpus used to pad the catalog so there was always
+something to rank and something for the diversity pass to work with. It is gone,
+because every recommendation should be a story a reader can actually open. The cost
+is honest and worth stating to product:
+
+- With a few dozen published stories there is **little to rank and little to
+  diversify**. Expect result lists that look thin or repetitive, and a low
+  `diversity` number that is reporting reality rather than malfunctioning.
+- An ad-hoc query naming a book TaleTribe does not host — *"something like Dune"* —
+  **has no anchor**. Seed titles are resolved against the catalog by fuzzy match, so
+  an unhosted title resolves to nothing and comes back in `unresolved_books`. Free
+  text still works (it is embedded directly, or expanded by HyDE first), so the UI
+  should prefer prompts over title-matching while the catalog is small.
+- The "For you" shelf silently becomes **"Popular on TaleTribe"** for any reader
+  without enough signals. The frontend already switches its title and eyebrow text
+  for this — that is the intended experience, not a fallback bug.
+
+**None of the behavioral signals have ever run against real traffic.** The jobs that
+derive likes/ratings/progress into the recommender exist and are tested, but nothing
+schedules them yet. Until they run, every recommendation on the platform is **100%
+content similarity** — popularity and collaborative filtering contribute exactly
+nothing regardless of configuration.
 
 ## Where to go next
 
@@ -120,3 +139,8 @@ derivative works. If premise text becomes user-visible, attribution needs settli
 | How it would be deployed, secured and scaled | [deployment.md](deployment.md) |
 | How quality would be measured, and why it isn't yet | [evaluation.md](evaluation.md) |
 | Every bug we hit and how it was found | [development-log.md](development-log.md) |
+| **Something is wrong and you need to diagnose it** | **[runbook.md](runbook.md)** |
+| The three background jobs and what breaks without them | [jobs.md](jobs.md) |
+| How the browser and Firebase Functions call this | [frontend-integration.md](frontend-integration.md) |
+| Database roles, the privacy boundary, and threats | [security-and-roles.md](security-and-roles.md) |
+| What the 431 tests cover, and what they don't | [testing.md](testing.md) |

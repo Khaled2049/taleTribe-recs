@@ -3,7 +3,7 @@
 Self-skipping on a missing `RECS_TEST_DATABASE_URL` — see the note in
 test_rec_integration.py for why that guard is required in this repo.
 
-Seeds its own fixtures under a `__ret__` source_id prefix and removes them
+Seeds its own fixtures under a `__ret__` key prefix and removes them
 afterwards, so it does not depend on a backfill having run and cannot disturb
 loaded catalog data.
 """
@@ -22,11 +22,16 @@ os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "test-project")
 os.environ["USE_MOCK"] = "true"
 os.environ["ENVIRONMENT"] = "development"
 
-from recommendation_engine.db import Database  # noqa: E402
-from recommendation_engine.fusion import merge_candidate_records  # noqa: E402
-from recommendation_engine.migrations import migrate  # noqa: E402
-from recommendation_engine.mmr import diversify  # noqa: E402
-from recommendation_engine.retrieval import (  # noqa: E402
+from conftest import (
+    drop_stories,
+    require_recommendations_schema,
+    seed_stories,
+)
+
+from recommendation_engine.db import Database
+from recommendation_engine.fusion import merge_candidate_records
+from recommendation_engine.mmr import diversify
+from recommendation_engine.retrieval import (
     RetrievalFilters,
     Retriever,
     _is_timeout,
@@ -35,7 +40,6 @@ from recommendation_engine.scoring import (  # noqa: E402
     CatalogStats,
     ScoringConfig,
     blend,
-    source_weight,
 )
 
 pytestmark = [
@@ -77,7 +81,7 @@ QUERY_A = unit(0)
 QUERY_B = vec({0: 0.5, 3: 0.866})
 
 FIXTURES = [
-    # (suffix, title, author, genres, themes, word_count, year, source, vector)
+    # (suffix, title, author, genres, themes, word_count, year, vector)
     (
         "sf1",
         "Desert Prophecy",
@@ -86,7 +90,6 @@ FIXTURES = [
         ["prophecy"],
         100000,
         1965,
-        "cmu",
         vec({0: 1.0}),
     ),
     (
@@ -97,7 +100,6 @@ FIXTURES = [
         ["prophecy"],
         90000,
         1969,
-        "cmu",
         vec({0: 0.99, 1: 0.141}),
     ),
     (
@@ -108,7 +110,6 @@ FIXTURES = [
         ["space colonisation"],
         80000,
         1970,
-        "cmu",
         vec({0: 0.98, 2: 0.199}),
     ),
     (
@@ -119,7 +120,6 @@ FIXTURES = [
         ["slow burn romance"],
         40000,
         1813,
-        "cmu",
         vec({0: 0.97, 3: 0.243}),
     ),
     (
@@ -130,20 +130,23 @@ FIXTURES = [
         ["magic system"],
         5000,
         2026,
-        "platform",
         vec({0: 0.96, 4: 0.280}),
     ),
 ]
 
 
 async def _ensure_schema() -> None:
-    await migrate.run(TEST_DSN)
+    await require_recommendations_schema(TEST_DSN)
+
+
+KEYS = [PREFIX + f[0] for f in FIXTURES]
 
 
 async def _seed(db: Database) -> dict:
     """Insert fixtures, returning suffix -> id."""
     ids = {}
     async with db.write_pool.acquire() as conn:
+        stories = await seed_stories(conn, KEYS)
         for (
             suffix,
             title,
@@ -152,25 +155,23 @@ async def _seed(db: Database) -> dict:
             themes,
             word_count,
             year,
-            source,
             vector,
         ) in FIXTURES:
             item_id = await conn.fetchval(
                 """
                 INSERT INTO recommendations.items (
-                    source, source_id, title, author, genres, themes,
+                    story_id, title, author, genres, themes,
                     word_count, published_year, is_eligible,
                     embed_input, embed_input_sha, embedding, embed_task_type
                 ) VALUES (
-                    $1::recommendations.item_source, $2, $3, $4, $5::text[], $6::text[],
-                    $7, $8, true, 'x', $9, $10::vector, 'RETRIEVAL_DOCUMENT'
+                    $1::uuid, $2, $3, $4::text[], $5::text[],
+                    $6, $7, true, 'x', $8, $9::vector, 'RETRIEVAL_DOCUMENT'
                 )
-                ON CONFLICT (source, source_id) DO UPDATE SET
+                ON CONFLICT (story_id) DO UPDATE SET
                     embedding = EXCLUDED.embedding, genres = EXCLUDED.genres
                 RETURNING id
                 """,
-                source,
-                PREFIX + suffix,
+                stories[PREFIX + suffix],
                 title,
                 author,
                 genres,
@@ -186,9 +187,7 @@ async def _seed(db: Database) -> dict:
 
 async def _cleanup(db: Database) -> None:
     async with db.write_pool.acquire() as conn:
-        await conn.execute(
-            "DELETE FROM recommendations.items WHERE source_id LIKE $1", PREFIX + "%"
-        )
+        await drop_stories(conn, KEYS)
 
 
 async def _fixture_db():
@@ -335,19 +334,6 @@ async def test_theme_filter():
         await _cleanup(db)
         await db.aclose()
 
-
-async def test_source_filter_isolates_platform_items():
-    """The behavioral path uses this: a CMU book is a dead end for a reader."""
-    db, ids = await _fixture_db()
-    try:
-        result = await _retriever(db).knn(
-            QUERY_A, 50, RetrievalFilters(sources=["platform"])
-        )
-        rows = _only_fixtures(result.rows, ids)
-
-        assert {row["id"] for row in rows} == {ids["plat1"]}
-    finally:
-        await _cleanup(db)
         await db.aclose()
 
 
@@ -482,15 +468,12 @@ async def test_full_pipeline_scores_and_diversifies():
         merged = merge_candidate_records([_only_fixtures(r.rows, ids) for r in results])
 
         config = ScoringConfig()
-        stats = CatalogStats(platform_item_count=1)
         for row in merged:
             breakdown = blend(
                 semantic=row["semantic"],
                 popularity_score=float(row["pop_score"]),
                 collaborative=0.0,
                 n_interactions=row["n_interactions"],
-                source=row["source"],
-                platform_item_count=stats.platform_item_count,
                 config=config,
             )
             row["score"] = breakdown.score
@@ -500,23 +483,12 @@ async def test_full_pipeline_scores_and_diversifies():
         assert len(final) == 3
         assert all(0.0 <= row["score"] <= 1.0 for row in final)
         # Every fixture has zero interactions, so alpha is 0 and the score is
-        # exactly semantic x source_weight — no popularity, no CF.
+        # exactly the semantic score — no popularity, no CF.
         top = final[0]
-        expected_src = source_weight(top["source"], stats.platform_item_count, config)
-        assert top["score"] == pytest.approx(top["semantic"] * expected_src, abs=1e-6)
+        assert top["score"] == pytest.approx(top["semantic"], abs=1e-6)
     finally:
         await _cleanup(db)
         await db.aclose()
-
-
-async def test_cmu_items_are_down_weighted_relative_to_platform():
-    """Same semantic score, different source: the platform item must win."""
-    config = ScoringConfig()
-
-    cmu = blend(0.9, 0.0, 0.0, 0, "cmu", 2500, config)
-    platform = blend(0.9, 0.0, 0.0, 0, "platform", 2500, config)
-
-    assert platform.score > cmu.score
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -602,9 +574,12 @@ async def test_popular_fallback_needs_no_query_vector():
 async def test_popular_fallback_applies_filters():
     db, ids = await _fixture_db()
     try:
+        # The popular path shares RetrievalFilters with the KNN path, so it has
+        # to honour them too — a reader who asked for fantasy must not be handed
+        # the whole catalog just because there was no query vector.
         rows = _only_fixtures(
             await _retriever(db).popular(
-                limit=50, filters=RetrievalFilters(sources=["platform"])
+                limit=50, filters=RetrievalFilters(genres=["fantasy"])
             ),
             ids,
         )
@@ -620,8 +595,6 @@ async def test_catalog_stats_reports_what_scoring_needs():
     try:
         stats = CatalogStats.from_row(await _retriever(db).catalog_stats())
 
-        # One platform fixture was seeded (plus anything already loaded).
-        assert stats.platform_item_count >= 1
         assert 1 <= stats.global_mean_rating <= 5
         assert stats.p95_engagement > 0
     finally:

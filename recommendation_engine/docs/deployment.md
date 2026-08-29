@@ -17,13 +17,19 @@ Browser
   └── streaming explanations ─────────Firebase ID token───────────→ Cloud Run
                                       (Stage B: requires public ingress)
                                                 │
-                    ┌───────────────────────────┼──────────────────────┐
-                    ▼                           ▼                      ▼
-            Neon Postgres              Gemini API              Firestore
-            (pgvector)                 embeddings +            (signals export,
-            RW primary                 flash-lite              Admin SDK)
-            RO compute ← serving
+                    ┌───────────────────────────┴──────────────────────┐
+                    ▼                                                  ▼
+            story-data's Neon project                          Gemini API
+            (pgvector, `recommendations` schema)               embeddings +
+            RW primary  ← ingest                               flash-lite
+            RO compute  ← serving
 ```
+
+**The database is story-data's, not this service's.** The `recommendations`
+schema lives in it and story-data migrates it; recs connects with its own role
+(`recs_service`, migration `000020`) which has usage on that schema and nothing
+else. Reader signals arrive from `story-data sync-recs`, not from an export
+pipeline — see "Data privacy" below.
 
 | Service | Role | Why this one |
 |---|---|---|
@@ -91,9 +97,9 @@ CMD ["python", "-m", "recommendation_engine.server"]
    `embedding_provider.py`, for the 768-dimension contract. Copying the whole story agent
    would drag in Firestore, MCP and the LLM provider for nothing.
 
-**Image size discipline.** The corpus (`booksummaries/`, 42 MB) must be `.dockerignore`d.
-It's ingest input, not runtime data — baking it in bloats every deploy and every cold
-start for no benefit.
+**Image size discipline.** There is no corpus to exclude any more — the catalog is read
+from story-data at ingest time rather than shipped in the image. Keep `.dockerignore`
+narrow anyway: `tests/`, `recommendation_engine/docs/`, `.env`, and the caches.
 
 ---
 
@@ -203,22 +209,38 @@ test ──→ build ──→ push ──→ secrets ──→ MIGRATE ──�
    body**, not just a 200 — `pgvector_ok`, `hnsw_index_present`,
    `embedding_dimension_ok`. Those are exactly the conditions whose absence is silent.
 
-### Migrations belong in the pipeline, not at startup
+### This service does not migrate
 
-Three options, and the choice matters:
+The `recommendations` schema is created by story-data's goose migrations
+(`000019`, `000020`), applied by story-data's own deploy under an advisory lock.
+recs has no migration runner; `/health` reports `schema_present: false` and goes
+red if it is started against a database story-data has not migrated.
 
-| Where | Verdict |
-|---|---|
-| App startup (`lifespan`) | **No.** `CREATE INDEX ... USING hnsw` on a large table takes minutes and would blow the startup probe. Also runs N times for N instances. |
-| Cloud Run Job, triggered by CD | Good — isolated, its own timeout, uses the RW DSN. |
-| A step in the deploy workflow | **Simplest and preferred** — one place, ordered before traffic shifts, fails the deploy loudly. |
-
-Either of the latter two is safe concurrently: the runner takes a **session advisory
-lock**, so two runners can't double-apply.
+**The ordering constraint that follows:** a recs revision that needs a new column
+cannot ship before the story-data migration that adds it. In practice that means
+schema changes for recs are ordinary story-data PRs, deployed first.
 
 **Migrations must be forward-only and additive.** Cloud Run can roll a revision back
 instantly; it cannot roll a schema back. So: add columns, don't drop them; add tables,
 don't rename them. A revision rollback has to remain safe against the newer schema.
+
+### The two feed jobs
+
+Neither runs in the serving process, and neither is scheduled yet.
+
+| Job | Where it runs | What it needs |
+|---|---|---|
+| `story-data sync-recs` | story-data's image, as a Cloud Run **Job** | the RW DSN. Full re-derivation; scans the social tables. |
+| `python -m recommendation_engine.ingest.platform` | this image, as a Cloud Run **Job** | the RW DSN + `GOOGLE_AI_STUDIO_API_KEY`. Incremental on a stored cursor. |
+| `python -m recommendation_engine.sync.seed --refresh-only` | this image | recomputes `item_stats`, `pop_score`, `user_taste` from `interactions`. Run **after** the other two. |
+
+Cloud Scheduler → Cloud Run Jobs is the smaller wiring than an authenticated
+endpoint, and it keeps a full table scan off the request path. Order matters:
+ingest (catalog) → sync-recs (signals) → refresh (aggregates).
+
+**Never run `--rebuild-index` against the serving database.** It drops the HNSW
+graph before recreating it, so every query in between falls back to a sequential
+scan. It is a maintenance command for a Neon branch, not a scheduled step.
 
 ---
 
@@ -264,19 +286,24 @@ Gate it behind `VITE_ENABLE_REC_STREAMING` so it's one env var from being revert
 
 ### Data privacy
 
-**Reading history is the sensitive data here.** `firestore.rules` warns that `allow read`
-grants `list`, so opening `users/{uid}/readingProgress` would let any signed-in user
-enumerate another reader's entire history. Consequences:
+**Reading history is the sensitive data here.** `reading_progress` in story-data is
+private per-user history — a table this service is not permitted to read at all.
+Consequences:
 
-- The signals export **must** be server-side via the Admin SDK. There is no client path.
-- Once exported, `recommendations.interactions` is a reading-history database. It deserves
-  the same care as the Firestore original: restricted DSN, no ad-hoc analyst access, and
+- The derivation is **story-data's**, in `internal/store/recommendations.go`, and
+  migration `000020` grants `recs_service` usage on the `recommendations` schema
+  only (plus `public` solely to resolve the `vector` type — no table grant). That
+  grant is what makes co-locating the two schemas safe; without it, sharing a
+  database silently hands recs a second, unaudited path to every reader's history.
+- Once derived, `recommendations.interactions` is a reading-history database. It deserves
+  the same care as the source tables: restricted role, no ad-hoc analyst access, and
   a documented retention position.
 - **Consider pseudonymising `user_id`** — HMAC with a pepper in Secret Manager rather than
   the raw Firebase uid. It limits damage from a Postgres compromise and makes deletion
   requests a matter of dropping rows by hashed key. But **it's a one-way door**: rotating
-  the pepper invalidates every row, and joining back to Firestore for debugging becomes
-  impossible. Decide before the first real export, not after.
+  the pepper invalidates every row, and joining back to a uid for debugging becomes
+  impossible. It also has to be applied inside story-data's derivation, which is the
+  only thing that sees the raw uid. Decide before the first real sync, not after.
 - **`/internal/users/forget`** for GDPR/CCPA erasure: delete from `interactions` and
   `user_taste` by user key. `purge_synthetic(prefix=...)` is already the shape of this.
 
@@ -284,8 +311,9 @@ enumerate another reader's entire history. Consequences:
 
 A dedicated service account with exactly: `roles/secretmanager.secretAccessor` on its
 three secrets, `roles/datastore.user` (only if it reads Firestore directly), and nothing
-else. **No Postgres superuser** — the app role needs DML plus `CREATE` on the
-`recommendations` schema only. Migrations can use a separate, more privileged role.
+else. **No Postgres superuser** — recs connects as `recs_service`, which has DML on
+the `recommendations` schema and nothing else; it does not need `CREATE`, because it
+does not migrate. story-data's own role owns the schema and runs the migrations.
 
 ### Supply chain and secrets hygiene
 
@@ -337,7 +365,9 @@ implemented, and the reason it exists is this deployment topology.
 ### Sizing Postgres from measured numbers
 
 Measured on the live database: **4,296 bytes per row** of HNSW index (768 floats = 3,072
-bytes, plus `m = 16` graph links), and 31 MB total relation size at 1,987 rows.
+bytes, plus `m = 16` graph links), and 31 MB total relation size at 1,987 rows —
+measured on the old CMU-seeded catalog, and still the right per-row figure to
+extrapolate from, since a row's size does not depend on where the story came from.
 
 | Catalog | HNSW index | Total relation | Neon compute |
 |---|---|---|---|
@@ -464,9 +494,10 @@ Cloud Run keeps revisions, so rollback is a traffic split — near-instant. Cons
 `--no-traffic` deploys plus a manual promote for risky changes.
 
 **But schema and data changes don't roll back.** Forward-only migrations, additive
-changes, and a re-run of the backfill is always safe (it's idempotent and skips unchanged
-rows). A `PROMPT_VERSION` bump is the one genuinely expensive, hard-to-undo operation —
-it invalidates the normalization cache and costs a full re-derive (~$2.40).
+changes, and a re-run of the ingest is always safe (it's idempotent and skips rows whose
+`embed_input_sha` is unchanged). A `PROMPT_VERSION` bump is the one genuinely expensive,
+hard-to-undo operation — it invalidates the normalization cache and costs a full
+re-derive of every story.
 
 ### Cost controls
 
@@ -475,7 +506,7 @@ it invalidates the normalization cache and costs a full re-derive (~$2.40).
 | Explanation spend | deterministic cache + 6/min bucket + bounded `max_output_tokens` |
 | Runaway scaling | `max_instance_count` |
 | Postgres | Neon compute cap and autoscaling bounds |
-| Ingest | `--limit`, resumability, and a cost cap in the backfill |
+| Ingest | `--limit`, the stored cursor, and the `embed_input_sha` skip |
 
 **Explanations bypass creditProxy and are therefore unmetered.** There is no ledger entry,
 so the cache and the rate bucket are the *only* things between a client-side loop and a
@@ -488,14 +519,17 @@ Everything in this database is **derivable**. That's an unusually comfortable po
 
 | Data | Recovery |
 |---|---|
-| `items` (catalog) | re-run the backfill — ~$2.40 and a couple of hours |
-| `interactions` | re-export from Firestore, the system of record |
+| `items` (catalog) | re-run `ingest.platform --full` — one embedding pass over the published catalog |
+| `interactions` | re-run `story-data sync-recs`; `story_likes`/`story_ratings`/`reading_progress` are the system of record |
 | `item_stats`, `user_taste`, `item_cooccurrence` | `--refresh-only`, minutes, free |
 | `explanation_cache` | regenerates on demand |
-| `normalization_cache` | the one worth backing up — it's the $2.40 |
+| `normalization_cache` | the one worth backing up — it is the accumulated LLM spend |
 
 So the RPO can be relaxed. Enable Neon PITR anyway (it's cheap), but the real backup is
-that Firestore holds the source of truth and the pipeline is reproducible.
+that story-data's own tables hold the source of truth and every derivation is
+reproducible — and since both now live in one Neon project, a PITR restore recovers
+the source and the derivations together rather than leaving them at different points
+in time.
 
 ---
 
@@ -510,17 +544,20 @@ that Firestore holds the source of truth and the pipeline is reproducible.
 
 **Code**
 - [ ] `Dockerfile` with `--with recommendations`, non-root user, narrow COPY set
-- [ ] `.dockerignore` excluding `booksummaries/`
+- [ ] `.dockerignore` excluding `tests/`, `recommendation_engine/docs/`, `.env`
 - [ ] Terraform root at prefix `novelsync-recs`, with the `enable_public_access` precondition
 - [ ] `deploy-recs.yml` and `pr-check-recs.yml`, path-filtered
-- [ ] Migration step in CD, before traffic
+- [ ] No migration step here — story-data owns the schema and must deploy first
 - [ ] Confirm `statement_cache_size=0` against the pooled endpoint under load
 
 **Data**
-- [ ] Run migrations
-- [ ] Backfill the corpus (`--rebuild-index`)
-- [ ] Decide `user_id` pseudonymisation **before** the first export — one-way door
-- [ ] Write `sync/firestore.py`; schedule nightly sync
+- [ ] Confirm the Neon project ships pgvector >= 0.8 (`hnsw.iterative_scan`)
+- [ ] Create the `recs_service` role, then re-run story-data's migrations so `000020` grants it
+- [ ] Point `RECS_DATABASE_URL` at story-data's project; `RECS_DATABASE_URL_RO` at a read compute
+- [ ] Ingest the catalog (`ingest.platform --full`)
+- [ ] Decide `user_id` pseudonymisation **before** the first sync — one-way door, and it
+      belongs in story-data's derivation, the only thing that sees the raw uid
+- [ ] Schedule the three jobs in order: ingest → `sync-recs` → `--refresh-only`
 - [ ] `--purge` the synthetic readers
 
 **Operations**

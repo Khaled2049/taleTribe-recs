@@ -1,19 +1,18 @@
-"""Getting reader behaviour into Postgres.
+"""Reader signals, and everything derived from them.
 
-Deliberately split into a **source-agnostic loader** and pluggable sources:
+Two producers, one table:
 
-    synthetic.py  ─┐
-                   ├──→ InteractionRecord ──→ interactions.load()  ──→ interactions
-    firestore.py  ─┘         (canonical)      stats.refresh()      ──→ item_stats
-     (Phase 3)                                                     ──→ user_taste
+* **story-data** derives real signals from `story_likes`, `story_ratings` and
+  `reading_progress` into `recommendations.interactions`
+  (`story-data sync-recs`). It owns that path because `reading_progress` is
+  private per-user data this service is not permitted to read — the grant in
+  migration 000020 enforces it.
+* **`synthetic.py`** generates `synth_`-prefixed readers, which `interactions.load()`
+  writes. That prefix is what keeps the two producers from treading on each
+  other: story-data's sync neither deletes nor derives over synthetic rows.
 
-The point of the split is that swapping synthetic seed data for real Firestore
-signals changes *only the source*. Completion inference, engagement weighting,
-popularity aggregation and taste-vector construction are written and tested once,
-against whichever source is plugged in.
-
-The canonical record is modelled on what Firestore actually offers — binary likes,
-create-only 1-5 ratings, and reading-progress *state* — rather than on an idealized
-event log the platform does not have. A synthetic source that emitted richer data
-than production can supply would be building on sand.
+Everything downstream is this package's, and never leaves the schema:
+`stats.py` recomputes `item_stats` (including `pop_score`), `user_taste` and
+`item_cooccurrence` from `interactions` alone. Run it with
+`seed.py --refresh-only` after a story-data sync.
 """

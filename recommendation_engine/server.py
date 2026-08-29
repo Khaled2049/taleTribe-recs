@@ -8,9 +8,12 @@ owners). It shares the *conventions* of the root app — `create_app()` factory,
 output, singletons on `app.state`, and a stable `{success, data, error}` envelope
 — but none of its state.
 
+The `recommendations` schema lives in story-data's database and is migrated by
+story-data, not here. Start that stack first; this service only reads and writes
+its own schema.
+
 Run locally:
-    docker compose -f recommendation_engine/docker-compose.yml up -d
-    python -m recommendation_engine.migrations.migrate
+    (from repos/story-data)  docker compose up -d postgres && make migrate
     python -m recommendation_engine.server
 """
 
@@ -290,6 +293,17 @@ def create_app() -> FastAPI:
         A missing HNSW index, a pgvector older than 0.8.0, or an embedder at the
         wrong dimension all produce empty or degraded results rather than errors,
         so each is checked explicitly and reflected in the status code.
+
+        An absent `recommendations` schema is checked for the same reason. This
+        service no longer creates it — story-data does — so an instance started
+        before story-data has migrated would otherwise answer every request with
+        an opaque 500 instead of failing its health check.
+
+        So is a **serving embedder that disagrees with the catalog**. Vectors
+        from different models occupy different spaces; querying one against the
+        other returns confident nonsense rather than an error. An empty catalog
+        is not a mismatch — a fresh database has nothing to disagree with, and
+        must not fail its health check for it.
         """
         state = recommendation_app_state(app)
         embedder = state.embedder
@@ -313,11 +327,26 @@ def create_app() -> FastAPI:
             payload["database"] = {"connected": False, "error": str(exc)}
 
         db_state = payload["database"]
+
+        catalog_model = db_state.get("catalog_embed_model")
+        active_model = getattr(embedder, "model_id", None) if embedder else None
+        payload["catalog_embed_model"] = catalog_model
+        payload["embedder_model"] = active_model
+        payload["embed_model_ok"] = catalog_model is None or catalog_model == active_model
+        if not payload["embed_model_ok"]:
+            logger.error(
+                "embedder_model_mismatch",
+                catalog_embed_model=catalog_model,
+                embedder_model=active_model,
+            )
+
         degraded = (
             not db_state.get("connected")
             or not db_state.get("pgvector_ok")
             or not db_state.get("hnsw_index_present")
+            or not db_state.get("schema_present")
             or not payload["embedding_dimension_ok"]
+            or not payload["embed_model_ok"]
         )
         if degraded:
             payload["status"] = "degraded"

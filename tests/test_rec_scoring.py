@@ -11,11 +11,9 @@ import pytest
 
 os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "test-project")
 
-from recommendation_engine.scoring import (  # noqa: E402
-    CMU_SOURCE,
+from recommendation_engine.scoring import (
     DEFAULTS,
     MAX_BEHAVIORAL_WEIGHT,
-    PLATFORM_SOURCE,
     CatalogStats,
     ScoringConfig,
     bayesian_rating,
@@ -28,7 +26,6 @@ from recommendation_engine.scoring import (  # noqa: E402
     percentile,
     popularity,
     seed_engagement_weight,
-    source_weight,
     term_weights,
 )
 
@@ -378,47 +375,6 @@ def test_negative_signal_detection(kind, value, expected):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# Source weighting: CMU as temporary scaffolding
-# ══════════════════════════════════════════════════════════════════════════
-
-
-def test_platform_items_are_never_down_weighted():
-    for count in (0, 1000, 100_000):
-        assert source_weight(PLATFORM_SOURCE, count, CONFIG) == 1.0
-
-
-def test_cmu_starts_at_full_weight_on_an_empty_platform():
-    """Cold start: the seed corpus is all there is."""
-    assert source_weight(CMU_SOURCE, 0, CONFIG) == 1.0
-
-
-def test_cmu_weight_halves_at_half_the_target():
-    """target = 5000 → at 2500 platform items, weight = 1 - 0.5 = 0.5"""
-    assert source_weight(CMU_SOURCE, 2500, CONFIG) == pytest.approx(0.5)
-
-
-def test_cmu_weight_decreases_monotonically():
-    weights = [
-        source_weight(CMU_SOURCE, n, CONFIG) for n in (0, 1000, 2500, 4000, 9999)
-    ]
-
-    assert weights == sorted(weights, reverse=True)
-
-
-def test_cmu_weight_rests_on_the_floor():
-    """Not zero: CMU books stay useful as taste-space anchors for ad-hoc queries
-    naming a book the platform will never host."""
-    assert source_weight(CMU_SOURCE, 1_000_000, CONFIG) == CONFIG.cmu_weight_floor
-    assert CONFIG.cmu_weight_floor > 0
-
-
-def test_cmu_floor_reached_at_the_expected_catalog_size():
-    """floor 0.25 → 1 - N/5000 = 0.25 at N = 3750."""
-    assert source_weight(CMU_SOURCE, 3750, CONFIG) == pytest.approx(0.25)
-    assert source_weight(CMU_SOURCE, 4500, CONFIG) == 0.25
-
-
-# ══════════════════════════════════════════════════════════════════════════
 # The blend
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -429,8 +385,6 @@ def test_cold_start_score_is_exactly_the_semantic_score():
         popularity_score=0.1,
         collaborative=0.0,
         n_interactions=0,
-        source=PLATFORM_SOURCE,
-        platform_item_count=1000,
         config=CONFIG,
     )
 
@@ -446,8 +400,6 @@ def test_established_item_blends_in_popularity():
         popularity_score=1.0,
         collaborative=0.0,
         n_interactions=20,
-        source=PLATFORM_SOURCE,
-        platform_item_count=1000,
         config=CONFIG,
     )
 
@@ -462,8 +414,6 @@ def test_cf_contributes_nothing_while_stubbed():
         semantic=0.5,
         popularity_score=0.5,
         n_interactions=100,
-        source=PLATFORM_SOURCE,
-        platform_item_count=1000,
         config=CONFIG,
     )
 
@@ -481,8 +431,6 @@ def test_cf_contributes_once_enabled():
         semantic=0.5,
         popularity_score=0.5,
         n_interactions=1_000_000,
-        source=PLATFORM_SOURCE,
-        platform_item_count=1000,
         config=config,
     )
 
@@ -492,32 +440,14 @@ def test_cf_contributes_once_enabled():
     assert with_cf.score > without.score
 
 
-def test_cmu_source_weight_is_applied_multiplicatively():
-    """At 2500 platform items CMU is halved."""
-    kwargs = dict(
-        semantic=0.8,
-        popularity_score=0.0,
-        collaborative=0.0,
-        n_interactions=0,
-        platform_item_count=2500,
-        config=CONFIG,
-    )
-
-    platform = blend(source=PLATFORM_SOURCE, **kwargs)
-    cmu = blend(source=CMU_SOURCE, **kwargs)
-
-    assert platform.score == pytest.approx(0.8)
-    assert cmu.score == pytest.approx(0.4)
-
-
 def test_score_stays_in_unit_range():
-    result = blend(1.0, 1.0, 1.0, 10**9, PLATFORM_SOURCE, 0, CONFIG)
+    result = blend(1.0, 1.0, 1.0, 10**9, CONFIG)
 
     assert 0.0 <= result.score <= 1.0
 
 
 def test_inputs_are_clamped():
-    result = blend(5.0, -2.0, 9.0, 0, PLATFORM_SOURCE, 0, CONFIG)
+    result = blend(5.0, -2.0, 9.0, 0, CONFIG)
 
     assert result.semantic == 1.0
     assert result.popularity == 0.0
@@ -527,7 +457,7 @@ def test_inputs_are_clamped():
 def test_breakdown_exposes_every_input():
     """A surprising ranking should be explainable from the response, not by
     re-deriving the arithmetic."""
-    payload = blend(0.8, 0.5, 0.0, 20, CMU_SOURCE, 2500, CONFIG).as_dict()
+    payload = blend(0.8, 0.5, 0.0, 20, CONFIG).as_dict()
 
     assert set(payload) == {
         "score",
@@ -536,7 +466,6 @@ def test_breakdown_exposes_every_input():
         "collaborative",
         "weights",
         "alpha",
-        "source_weight",
     }
     assert set(payload["weights"]) == {"semantic", "popularity", "collaborative"}
 
@@ -554,13 +483,10 @@ def test_catalog_stats_defaults_are_sane():
 
 
 def test_catalog_stats_from_row():
-    stats = CatalogStats.from_row(
-        {"global_mean_rating": 4.1, "p95_engagement": 55, "platform_item_count": 12}
-    )
+    stats = CatalogStats.from_row({"global_mean_rating": 4.1, "p95_engagement": 55})
 
     assert stats.global_mean_rating == 4.1
     assert stats.p95_engagement == 55.0
-    assert stats.platform_item_count == 12.0
 
 
 def test_catalog_stats_from_empty_row_uses_defaults():

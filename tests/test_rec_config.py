@@ -138,9 +138,9 @@ def test_production_requires_caller_allowlist(monkeypatch):
 
 
 def test_production_rejects_local_dev_dsn(monkeypatch):
-    """The docker-compose default must never reach production."""
+    """story-data's local DSN must never reach production."""
     monkeypatch.delenv("RECS_DATABASE_URL", raising=False)
-    with pytest.raises(ValueError, match="local docker-compose default"):
+    with pytest.raises(ValueError, match="local story-data default"):
         RecSettings(**_prod_kwargs(recs_database_url=LOCAL_DEV_DSN))
 
 

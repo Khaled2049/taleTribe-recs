@@ -1,6 +1,6 @@
-"""Corpus ingest: parse, normalize, embed, load.
+"""Catalog ingest: read published stories, normalize, embed, load.
 
-The CMU Book Summary Corpus is cold-start scaffolding — source-tagged as `cmu`
-and weighted down as the on-platform catalog grows. Its licence is CC BY-SA, so
-anywhere CMU-derived text becomes user-visible it needs attribution.
+Every item is a TaleTribe story owned by story-data; `recommendations.items`
+keys back to it by `story_id`. The CMU Book Summary Corpus that used to seed
+this catalog for cold start is gone, along with its parser and genre crosswalk.
 """

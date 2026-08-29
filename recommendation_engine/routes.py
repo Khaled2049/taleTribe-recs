@@ -61,7 +61,6 @@ class _Cached:
 class FilterSpec(BaseModel):
     genres: Optional[List[str]] = None
     themes: Optional[List[str]] = None
-    sources: Optional[List[str]] = None
     max_word_count: Optional[int] = None
     min_word_count: Optional[int] = None
     author: Optional[str] = None
@@ -71,7 +70,6 @@ class FilterSpec(BaseModel):
         return RetrievalFilters(
             genres=self.genres,
             themes=self.themes,
-            sources=self.sources,
             max_word_count=self.max_word_count,
             min_word_count=self.min_word_count,
             author=self.author,
@@ -145,7 +143,7 @@ def build_router(verify_internal_token) -> APIRouter:
         """Fetch the fields an explanation needs, by id."""
         state = recommendation_state(request)
         rows = await state.db.read_pool.fetch(
-            "SELECT id, source::text AS source, source_id, title, author, genres, "
+            "SELECT id, story_id, title, author, genres, "
             "themes, tone, core_premise, embed_input_sha "
             "FROM recommendations.items WHERE id = ANY($1::bigint[])",
             item_ids,
@@ -160,8 +158,7 @@ def build_router(verify_internal_token) -> APIRouter:
             targets.append(
                 explain_mod.ExplanationTarget(
                     item_id=row["id"],
-                    source=row["source"],
-                    source_id=row["source_id"],
+                    story_id=str(row["story_id"]),
                     title=row["title"],
                     author=row["author"],
                     genres=list(row["genres"] or []),
@@ -332,8 +329,7 @@ def build_router(verify_internal_token) -> APIRouter:
         for item in data["items"]:
             item["explanation_cache_key"] = explain_mod.cache_key(
                 state.llm.model if state.llm else "none",
-                item["source"],
-                item["source_id"],
+                item["story_id"],
                 next(
                     (
                         i.embed_input_sha or ""

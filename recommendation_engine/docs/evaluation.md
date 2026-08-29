@@ -268,7 +268,6 @@ A metric that changes no decision is waste. Organised by knob:
 | `ramp_n50` | 20 | leave-one-out | needs users |
 | `w_pop_ceiling` | 0.25 | online CTR | needs users + event log |
 | `w_cf_ceiling` | 0.00 | online CTR | needs users + event log |
-| `cmu_target_catalog` | 5000 | judgement | never purely empirical |
 
 **Three of the scoring knobs cannot be tuned until Firestore is connected.** Tuning them
 against synthetic data would be fitting to the generator's assumptions. That's a real

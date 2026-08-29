@@ -59,8 +59,7 @@ def query_fingerprint(
 
 def cache_key(
     model: str,
-    source: str,
-    source_id: str,
+    story_id: str,
     embed_input_sha: str,
     fingerprint: str,
 ) -> str:
@@ -70,16 +69,14 @@ def cache_key(
 
     * `model` + `PROMPT_VERSION` — a different model or prompt writes different
       prose, so the old text must not be served.
-    * `source:source_id` — which book.
+    * `story_id` — which story.
     * `embed_input_sha` — **self-invalidating**: if the item's premise, themes or
       tone are re-derived, its hash changes and the stale explanation is abandoned
       automatically. No cache-busting logic to remember.
     * `fingerprint` — the same book explained for a different request needs a
       different sentence.
     """
-    payload = (
-        f"{model}|{PROMPT_VERSION}|{source}:{source_id}|{embed_input_sha}|{fingerprint}"
-    )
+    payload = f"{model}|{PROMPT_VERSION}|{story_id}|{embed_input_sha}|{fingerprint}"
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
@@ -88,8 +85,7 @@ class ExplanationTarget:
     """One thing to explain. Built from a pipeline result item."""
 
     item_id: int
-    source: str
-    source_id: str
+    story_id: str
     title: str
     author: Optional[str]
     genres: List[str]
@@ -102,8 +98,7 @@ class ExplanationTarget:
     def from_item(cls, item) -> "ExplanationTarget":
         return cls(
             item_id=item.id,
-            source=item.source,
-            source_id=item.source_id,
+            story_id=item.story_id,
             title=item.title,
             author=item.author,
             genres=list(item.genres or []),
@@ -115,7 +110,7 @@ class ExplanationTarget:
 
     def key(self, model: str, fingerprint: str) -> str:
         return cache_key(
-            model, self.source, self.source_id, self.embed_input_sha, fingerprint
+            model, self.story_id, self.embed_input_sha, fingerprint
         )
 
 

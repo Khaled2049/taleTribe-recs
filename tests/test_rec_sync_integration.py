@@ -23,13 +23,18 @@ if TEST_DSN:
 os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "test-project")
 os.environ["USE_MOCK"] = "true"
 
-import asyncpg  # noqa: E402
-from pgvector.asyncpg import register_vector  # noqa: E402
+import asyncpg
+from conftest import (
+    drop_stories,
+    require_recommendations_schema,
+    seed_stories,
+    story_id_for,
+)
+from pgvector.asyncpg import register_vector
 
-from recommendation_engine.migrations import migrate  # noqa: E402
-from recommendation_engine.scoring import ScoringConfig  # noqa: E402
-from recommendation_engine.sync import stats as stats_mod  # noqa: E402
-from recommendation_engine.sync.interactions import (  # noqa: E402
+from recommendation_engine.scoring import ScoringConfig
+from recommendation_engine.sync import stats as stats_mod
+from recommendation_engine.sync.interactions import (
     KIND_LIKE,
     KIND_PROGRESS,
     KIND_RATING,
@@ -65,24 +70,29 @@ async def _connect():
     return conn
 
 
+SUFFIXES = ("x", "y", "z")
+KEYS = [PREFIX + s for s in SUFFIXES]
+
+
 async def _setup():
     """Seed three catalog items and clear any prior test state."""
-    await migrate.run(TEST_DSN)
+    await require_recommendations_schema(TEST_DSN)
     conn = await _connect()
     ids = {}
     try:
         await _clear(conn)
-        for suffix, index in (("x", 0), ("y", 1), ("z", 2)):
+        stories = await seed_stories(conn, KEYS)
+        for suffix, index in zip(SUFFIXES, range(3)):
             ids[suffix] = await conn.fetchval(
                 """
                 INSERT INTO recommendations.items
-                    (source, source_id, title, is_eligible, embed_input,
+                    (story_id, title, is_eligible, embed_input,
                      embed_input_sha, embedding, embed_task_type)
-                VALUES ('cmu', $1, $2, true, 'x', $3, $4::vector,
+                VALUES ($1::uuid, $2, true, 'x', $3, $4::vector,
                         'RETRIEVAL_DOCUMENT')
                 RETURNING id
                 """,
-                PREFIX + suffix,
+                stories[PREFIX + suffix],
                 f"Sync Item {suffix.upper()}",
                 f"sha-{PREFIX}{suffix}",
                 unit(index),
@@ -102,9 +112,7 @@ async def _clear(conn=None):
         await conn.execute(
             "DELETE FROM recommendations.interactions WHERE user_id LIKE 'synth_test_%'"
         )
-        await conn.execute(
-            "DELETE FROM recommendations.items WHERE source_id LIKE $1", PREFIX + "%"
-        )
+        await drop_stories(conn, KEYS)
     finally:
         if own:
             await conn.close()
@@ -113,8 +121,7 @@ async def _clear(conn=None):
 def _rec(user, suffix, kind, value=None, chapter=None, total=None, offset=0):
     return InteractionRecord(
         user_id=user,
-        source="cmu",
-        source_id=PREFIX + suffix,
+        story_id=story_id_for(PREFIX + suffix),
         kind=kind,
         occurred_at=NOW - timedelta(days=offset),
         value=value,
@@ -162,8 +169,7 @@ async def test_unknown_items_are_counted_not_fatal():
                 _rec(USER_A, "x", KIND_LIKE),
                 InteractionRecord(
                     user_id=USER_A,
-                    source="cmu",
-                    source_id="does-not-exist",
+                    story_id=story_id_for("__nonexistent__"),
                     kind=KIND_LIKE,
                     occurred_at=NOW,
                 ),
@@ -172,7 +178,7 @@ async def test_unknown_items_are_counted_not_fatal():
 
         assert stats.written == 1
         assert stats.unknown_item == 1
-        assert "cmu:does-not-exist" in stats.unknown_examples
+        assert story_id_for("__nonexistent__") in stats.unknown_examples
     finally:
         await _clear(conn)
         await conn.close()
@@ -343,8 +349,7 @@ async def test_invalid_kinds_are_rejected():
             [
                 InteractionRecord(
                     user_id=USER_A,
-                    source="cmu",
-                    source_id=PREFIX + "x",
+                    story_id=story_id_for(PREFIX + "x"),
                     kind="dwell_time",
                     occurred_at=NOW,
                 )

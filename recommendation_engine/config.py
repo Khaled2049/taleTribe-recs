@@ -20,10 +20,11 @@ from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
 
-# The docker-compose default. Deliberately a real, working local DSN so `python
-# -m recommendation_engine.server` runs with zero config — and deliberately
-# rejected by the production validator below so it can never ship.
-LOCAL_DEV_DSN = "postgresql://recs:recs@localhost:5434/recs"
+# story-data's local database, which now holds the `recommendations` schema.
+# Deliberately a real, working local DSN so `python -m recommendation_engine.server`
+# runs with zero config once that stack is up — and deliberately rejected by the
+# production validator below so it can never ship.
+LOCAL_DEV_DSN = "postgresql://postgres:postgres@localhost:5433/story_data"
 
 # Every vector we write and every HNSW index must agree on this. Sourced from
 # the shared embedding provider rather than redeclared, so there is exactly one
@@ -37,9 +38,10 @@ SCHEMA_NAME = "recommendations"
 
 class RecSettings(BaseSettings):
     # ── Datastore ────────────────────────────────────────────────────────
-    # RW is used by migrations, ingest and sync; RO by request serving. In
-    # local dev they are the same DSN; in production RO points at a dedicated
-    # read-only compute so vector scans never share compute with billing.
+    # RW is used by ingest and sync; RO by request serving. In local dev they
+    # are the same DSN; in production RO points at a dedicated read-only
+    # compute so vector scans never share compute with the product API. Neither
+    # migrates: story-data owns the schema.
     recs_database_url: str = LOCAL_DEV_DSN
     recs_database_url_ro: str = ""  # falls back to recs_database_url (see property)
     recs_db_pool_min: int = 1
@@ -176,7 +178,7 @@ class RecSettings(BaseSettings):
             )
         if self.recs_database_url.strip() == LOCAL_DEV_DSN:
             raise ValueError(
-                "RECS_DATABASE_URL is still the local docker-compose default; set a "
+                "RECS_DATABASE_URL is still the local story-data default; set a "
                 "real DSN when ENVIRONMENT=production"
             )
         if not self.google_ai_studio_api_key.strip():
