@@ -19,7 +19,7 @@ import hashlib
 import logging
 import re
 from collections import OrderedDict
-from typing import List, Optional
+from typing import Optional
 
 from embedding_provider import (
     EmbeddingProvider,
@@ -62,7 +62,7 @@ class QueryEmbedder:
     ) -> None:
         self._provider = provider
         self._cache_size = max(0, cache_size)
-        self._cache: "OrderedDict[str, List[float]]" = OrderedDict()
+        self._cache: "OrderedDict[str, list[float]]" = OrderedDict()
         self.hits = 0
         self.misses = 0
 
@@ -78,7 +78,7 @@ class QueryEmbedder:
     def dimension(self) -> Optional[int]:
         return self._provider.dimension if self._provider else None
 
-    async def embed_query(self, text: str) -> List[float]:
+    async def embed_query(self, text: str) -> list[float]:
         """Embed user input as RETRIEVAL_QUERY, caching the result."""
         if self._provider is None:
             raise RuntimeError(
@@ -103,7 +103,7 @@ class QueryEmbedder:
                 self._cache.popitem(last=False)
         return vector
 
-    async def embed_documents(self, texts: List[str]) -> List[List[float]]:
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
         """Embed catalog text as RETRIEVAL_DOCUMENT, in input order.
 
         Uncached by design (see module docstring) and batched, because the only

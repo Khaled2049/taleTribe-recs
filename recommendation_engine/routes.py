@@ -11,7 +11,7 @@ explanation cache, that is the *only* thing standing between a loop and a bill.
 
 import logging
 import time
-from typing import List, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -59,14 +59,14 @@ class _Cached:
 
 
 class FilterSpec(BaseModel):
-    genres: Optional[List[str]] = None
-    themes: Optional[List[str]] = None
+    genres: Optional[list[str]] = None
+    themes: Optional[list[str]] = None
     max_word_count: Optional[int] = None
     min_word_count: Optional[int] = None
     author: Optional[str] = None
     published_after: Optional[int] = None
 
-    def to_filters(self, exclude_ids: List[int]) -> RetrievalFilters:
+    def to_filters(self, exclude_ids: list[int]) -> RetrievalFilters:
         return RetrievalFilters(
             genres=self.genres,
             themes=self.themes,
@@ -94,7 +94,7 @@ class AdhocRequest(BaseModel):
     prompt: Optional[str] = Field(default=None, max_length=2000)
     # Repeatable seeds are retrieved independently and fused by rank — never by
     # averaging their vectors, which would point at a region resembling neither.
-    books: List[SeedBook] = Field(default_factory=list)
+    books: list[SeedBook] = Field(default_factory=list)
     top_k: int = Field(default=10, ge=1, le=50)
     filters: Optional[FilterSpec] = None
     use_hyde: Optional[bool] = None  # None = follow the server default
@@ -102,9 +102,9 @@ class AdhocRequest(BaseModel):
 
 class ExplainRequest(BaseModel):
     user_id: str = Field(min_length=1, max_length=128)
-    item_ids: List[int] = Field(min_length=1, max_length=25)
+    item_ids: list[int] = Field(min_length=1, max_length=25)
     prompt: Optional[str] = Field(default=None, max_length=2000)
-    seed_item_ids: List[int] = Field(default_factory=list)
+    seed_item_ids: list[int] = Field(default_factory=list)
 
 
 def build_router(verify_internal_token) -> APIRouter:
@@ -139,7 +139,7 @@ def build_router(verify_internal_token) -> APIRouter:
                 },
             )
 
-    async def _load_targets(request: Request, item_ids: List[int]) -> list:
+    async def _load_targets(request: Request, item_ids: list[int]) -> list:
         """Fetch the fields an explanation needs, by id."""
         state = recommendation_state(request)
         rows = await state.db.read_pool.fetch(
@@ -193,8 +193,8 @@ def build_router(verify_internal_token) -> APIRouter:
             payload.user_id,
         )
 
-        query_vectors: List[List[float]] = []
-        exclude: List[int] = []
+        query_vectors: list[list[float]] = []
+        exclude: list[int] = []
         mode = "popular"
 
         if row is not None and row["n_signals"] >= 3:
@@ -257,10 +257,10 @@ def build_router(verify_internal_token) -> APIRouter:
         )
         config, stats = await cached.get(state.db, state.retriever)
 
-        query_vectors: List[List[float]] = []
-        exclude: List[int] = []
-        resolved: List[dict] = []
-        unresolved: List[str] = []
+        query_vectors: list[list[float]] = []
+        exclude: list[int] = []
+        resolved: list[dict] = []
+        unresolved: list[str] = []
 
         for book in payload.books:
             matches = await state.retriever.resolve_titles(

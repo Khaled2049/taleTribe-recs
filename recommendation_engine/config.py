@@ -204,7 +204,7 @@ class RecSettings(BaseSettings):
     def allowed_callers(self) -> frozenset[str]:
         """Frozenset of trusted caller service account emails."""
         if self.environment != "production":
-            return frozenset()
+            return frozenset[str]()
         raw_list = self.allowed_service_accounts.strip()
         if raw_list:
             return frozenset(
@@ -213,7 +213,7 @@ class RecSettings(BaseSettings):
         single = self.firebase_functions_service_account.strip()
         if single:
             return frozenset({single})
-        return frozenset()
+        return frozenset[str]()
 
     @property
     def read_dsn(self) -> str:

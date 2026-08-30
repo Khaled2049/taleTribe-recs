@@ -15,7 +15,7 @@ the source are separated.
 
 import logging
 from dataclasses import dataclass
-from typing import List, Optional, cast
+from typing import Optional, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -282,7 +282,7 @@ async def rebuild_cooccurrence(pool, config: ScoringConfig, min_cooc: int = 3) -
         return 0
 
 
-__all__: List[str] = [
+__all__: list[str] = [
     "MIN_SIGNALS_FOR_TASTE",
     "RefreshStats",
     "rebuild_cooccurrence",

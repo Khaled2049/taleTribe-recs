@@ -23,13 +23,14 @@ backfill rather than a rescoring rewrite.
 """
 
 import math
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Dict, Iterable, Mapping, Optional, Sequence
+from typing import Optional
 
 # Fallback knob values, used when a key is missing from recommendations.config.
 # The table is the source of truth; these keep the service ranking sensibly
 # rather than raising if a migration has not seeded a new knob yet.
-DEFAULTS: Dict[str, float] = {
+DEFAULTS: dict[str, float] = {
     "w_pop_ceiling": 0.25,
     "w_cf_ceiling": 0.00,
     "ramp_n_min": 5,

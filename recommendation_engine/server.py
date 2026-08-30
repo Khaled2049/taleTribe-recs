@@ -37,11 +37,11 @@ from embedding_provider import (
     verify_embedding_dimension,
 )
 from rate_limit import PerUserRateLimiter
-from recommendation_engine.config import RecSettings
 from recommendation_engine.app_state import (
     recommendation_app_state,
     recommendation_state,
 )
+from recommendation_engine.config import RecSettings
 from recommendation_engine.db import Database
 from recommendation_engine.embeddings import QueryEmbedder
 from recommendation_engine.env import REPO_ROOT, load_env

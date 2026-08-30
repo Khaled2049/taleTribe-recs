@@ -28,9 +28,10 @@ Field notes, each with a reason:
 """
 
 import logging
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Optional
 
 from recommendation_engine.scoring import is_negative_signal, seed_engagement_weight
 
@@ -93,7 +94,7 @@ class LoadStats:
     completions_derived: int = 0
     negative_signals: int = 0
     users: int = 0
-    unknown_examples: List[str] = field(default_factory=list)
+    unknown_examples: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         data = self.__dict__.copy()
@@ -102,7 +103,7 @@ class LoadStats:
 
 
 
-async def _resolve_items(pool, story_ids: Sequence[str]) -> Dict[str, int]:
+async def _resolve_items(pool, story_ids: Sequence[str]) -> dict[str, int]:
     """Map story_id -> items.id."""
     if not story_ids:
         return {}
@@ -127,7 +128,7 @@ async def load(pool, records: Iterable[InteractionRecord]) -> LoadStats:
     different information — how far they got, and that they finished.
     """
     stats = LoadStats()
-    batch: List[InteractionRecord] = []
+    batch: list[InteractionRecord] = []
     users = set()
 
     for record in records:
@@ -144,7 +145,7 @@ async def load(pool, records: Iterable[InteractionRecord]) -> LoadStats:
 
     resolved = await _resolve_items(pool, list({r.story_id for r in batch}))
 
-    rows: List[tuple] = []
+    rows: list[tuple] = []
     for record in batch:
         item_id = resolved.get(record.story_id)
         if item_id is None:

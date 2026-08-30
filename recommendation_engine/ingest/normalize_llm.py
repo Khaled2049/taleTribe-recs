@@ -21,8 +21,9 @@ instead of being embedded.
 import asyncio
 import json
 import logging
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional, Sequence, cast
+from typing import Optional, cast
 
 from recommendation_engine.ingest.compose import summary_sha
 from recommendation_engine.ingest.vocabularies import (
@@ -90,11 +91,11 @@ class Normalization:
     """
 
     core_premise: str
-    themes: List[str]
-    tone: List[str]
+    themes: list[str]
+    tone: list[str]
     confidence: float
-    raw_themes: List[str] = field(default_factory=list)
-    raw_tone: List[str] = field(default_factory=list)
+    raw_themes: list[str] = field(default_factory=list)
+    raw_tone: list[str] = field(default_factory=list)
 
     @property
     def is_reliable(self) -> bool:
@@ -113,7 +114,7 @@ class NormalizeStats:
     batches: int = 0
     content_blocked: int = 0
     split_retries: int = 0
-    vocabulary_violations: Dict[str, int] = field(default_factory=dict)
+    vocabulary_violations: dict[str, int] = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         data = self.__dict__.copy()
@@ -251,16 +252,16 @@ class Normalizer:
 
     async def normalize_many(
         self, records: Sequence[tuple]
-    ) -> Dict[str, Normalization]:
+    ) -> dict[str, Normalization]:
         """Normalize (id, title, author, summary) tuples, keyed by id.
 
         Cache lookups happen first and in bulk, so a resumed run makes zero API
         calls for work already done.
         """
         self.stats.requested += len(records)
-        results: Dict[str, Normalization] = {}
+        results: dict[str, Normalization] = {}
 
-        pending: List[tuple] = []
+        pending: list[tuple] = []
         if self._cache is not None:
             keys = {
                 identifier: summary_sha(summary, PROMPT_VERSION)
@@ -303,7 +304,7 @@ class Normalizer:
 
     async def _run_batch(
         self, batch: Sequence[tuple], allow_split: bool = True
-    ) -> Dict[str, Normalization]:
+    ) -> dict[str, Normalization]:
         # allow_split=False means we are already inside a split retry and the
         # semaphore is held by the caller — re-acquiring it would deadlock.
         if not allow_split:
@@ -313,7 +314,7 @@ class Normalizer:
 
     async def _execute_batch(
         self, batch: Sequence[tuple], allow_split: bool
-    ) -> Dict[str, Normalization]:
+    ) -> dict[str, Normalization]:
         self.stats.batches += 1
         prompt = build_prompt(batch)
         try:
@@ -339,7 +340,7 @@ class Normalizer:
                     len(batch),
                 )
                 self.stats.split_retries += 1
-                recovered: Dict[str, Normalization] = {}
+                recovered: dict[str, Normalization] = {}
                 for record in batch:
                     recovered.update(await self._run_batch([record], allow_split=False))
                 return recovered
@@ -364,7 +365,7 @@ class Normalizer:
         payload = cast(dict[str, object], generated)
 
         by_id = {str(identifier): None for identifier, _, _, _ in batch}
-        out: Dict[str, Normalization] = {}
+        out: dict[str, Normalization] = {}
         result_values = payload.get("results")
         if not isinstance(result_values, list):
             result_values = []
@@ -411,7 +412,7 @@ class NormalizationCache:
     def __init__(self, pool) -> None:
         self._pool = pool
 
-    async def get_many(self, shas: Iterable[str]) -> Dict[str, Normalization]:
+    async def get_many(self, shas: Iterable[str]) -> dict[str, Normalization]:
         shas = list(shas)
         if not shas:
             return {}
@@ -422,7 +423,7 @@ class NormalizationCache:
             shas,
             PROMPT_VERSION,
         )
-        out: Dict[str, Normalization] = {}
+        out: dict[str, Normalization] = {}
         for row in rows:
             raw_themes = list(row["themes"] or [])
             raw_tone = list(row["tone"] or [])
@@ -439,7 +440,7 @@ class NormalizationCache:
             )
         return out
 
-    async def put_many(self, entries: Dict[str, Normalization], model: str) -> None:
+    async def put_many(self, entries: dict[str, Normalization], model: str) -> None:
         if not entries:
             return
         await self._pool.executemany(

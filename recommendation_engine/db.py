@@ -8,8 +8,9 @@ both DSNs are identical and a single pool is shared.
 """
 
 import logging
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Optional, Sequence
+from typing import Optional
 
 import asyncpg
 from pgvector.asyncpg import register_vector

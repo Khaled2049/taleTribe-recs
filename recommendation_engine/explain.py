@@ -21,8 +21,9 @@ import asyncio
 import hashlib
 import json
 import logging
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
-from typing import AsyncIterator, Dict, List, Optional, Sequence
+from typing import Optional
 
 from recommendation_engine.llm import GeminiClient, LLMError
 
@@ -47,7 +48,7 @@ def query_fingerprint(
     same query — otherwise a shelf re-render with reordered seeds would miss the
     cache on every item.
     """
-    parts: List[str] = []
+    parts: list[str] = []
     if query:
         parts.append(" ".join(query.split()).casefold())
     if seed_item_ids:
@@ -88,9 +89,9 @@ class ExplanationTarget:
     story_id: str
     title: str
     author: Optional[str]
-    genres: List[str]
-    themes: List[str]
-    tone: List[str]
+    genres: list[str]
+    themes: list[str]
+    tone: list[str]
     core_premise: Optional[str]
     embed_input_sha: str
 
@@ -166,7 +167,7 @@ class ExplanationCache:
     def _pool(self):
         return self._db.read_pool
 
-    async def get_many(self, keys: Sequence[str]) -> Dict[str, str]:
+    async def get_many(self, keys: Sequence[str]) -> dict[str, str]:
         if not keys:
             return {}
         rows = await self._pool.fetch(
@@ -218,7 +219,7 @@ async def explain_many(
     fingerprint: str,
     max_output_tokens: int = 256,
     concurrency: int = 4,
-) -> List[dict]:
+) -> list[dict]:
     """Sync mode: explanations for every target, cached ones served free.
 
     A per-item failure yields `explanation: None` rather than failing the batch —
@@ -314,7 +315,7 @@ async def stream_explanations(
             completed += 1
             continue
 
-        pieces: List[str] = []
+        pieces: list[str] = []
         cancelled = False
         try:
             async for chunk in client.stream_text(

@@ -32,9 +32,10 @@ import argparse
 import asyncio
 import json
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional, Sequence
+from typing import Optional
 
 from embedding_provider import (
     get_embedding_provider,
@@ -81,7 +82,7 @@ class StoryRecord:
     category: Optional[str]
     target_audience: Optional[str]
     language: Optional[str]
-    tags: List[str]
+    tags: list[str]
     word_count: int
     chapter_count: int
     created_at: datetime
@@ -136,7 +137,7 @@ SELECT s.id, s.title, s.author_name, s.description, s.category,
 
 async def read_stories(
     pool, since: Optional[datetime] = None, limit: Optional[int] = None
-) -> List[StoryRecord]:
+) -> list[StoryRecord]:
     """Published stories, oldest change first so a cursor can advance safely."""
     sql = _READ_SQL + (f" LIMIT {int(limit)}" if limit else "")
     rows = await pool.fetch(sql, since)
@@ -185,7 +186,7 @@ def summary_text(record: StoryRecord) -> str:
     controlled `category` for it, while tags are free text and belong in the
     material the model reads.
     """
-    parts: List[str] = []
+    parts: list[str] = []
     if record.description.strip():
         parts.append(record.description.strip())
     if record.chapter_summary and record.chapter_summary.strip():
@@ -217,7 +218,7 @@ def to_normalized_item(record: StoryRecord, normalization) -> NormalizedItem:
 
 async def _existing_shas(
     pool, story_ids: Sequence[str], model_id: str, task_type: str
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """Map story_id -> embed_input_sha for rows already embedded *by this model*.
 
     Four conditions, each load-bearing:
@@ -249,7 +250,7 @@ async def _existing_shas(
     return {str(row["story_id"]): row["embed_input_sha"] for row in rows}
 
 
-async def _upsert(pool, rows: List[tuple]) -> None:
+async def _upsert(pool, rows: list[tuple]) -> None:
     """Insert or update catalog rows.
 
     `updated_at` is refreshed but `created_at` is preserved, so the
@@ -373,7 +374,7 @@ async def _process_chunk(
         db.read_pool, [r.story_id for r in chunk], model_id, TASK_TYPE_DOCUMENT
     )
 
-    pending: List[tuple] = []  # (record, normalization, embed_input, sha)
+    pending: list[tuple] = []  # (record, normalization, embed_input, sha)
     for record in chunk:
         normalization = normalizations.get(record.story_id)
         item = to_normalized_item(record, normalization)
@@ -404,7 +405,7 @@ async def _process_chunk(
         else:
             stats.ineligible_low_confidence += 1
 
-    vectors: Dict[str, list] = {}
+    vectors: dict[str, list] = {}
     if embeddable:
         computed = await query_embedder.embed_documents(
             [entry[2] for entry in embeddable]
@@ -572,7 +573,7 @@ class _IngestArgs(argparse.Namespace):
     dry_run: bool
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Load published TaleTribe stories into the recommendation catalog."
     )

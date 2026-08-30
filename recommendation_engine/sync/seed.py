@@ -25,7 +25,7 @@ import asyncio
 import json
 import logging
 import sys
-from typing import List, Optional, cast
+from typing import Optional, cast
 
 from recommendation_engine.config import RecSettings
 from recommendation_engine.db import Database
@@ -63,7 +63,7 @@ async def run(args: _SeedArgs) -> dict:
             report["purged_rows"] = removed
             logger.info("purged %d synthetic interaction rows", removed)
 
-        records: Optional[List[inter.InteractionRecord]] = None
+        records: Optional[list[inter.InteractionRecord]] = None
 
         if not args.refresh_only and not args.purge:
             catalog = await synthetic.load_catalog(pool, limit=args.catalog_limit)
@@ -142,7 +142,7 @@ async def run(args: _SeedArgs) -> dict:
         await db.aclose()
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Generate/load reader behaviour and refresh derived tables."
     )

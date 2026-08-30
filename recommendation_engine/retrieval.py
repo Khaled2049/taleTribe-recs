@@ -16,8 +16,9 @@ savings the join would have offered.
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Optional
 
 from recommendation_engine.db import Database
 
@@ -109,7 +110,7 @@ SELECT i.id, i.story_id, i.title, i.author,
 
 @dataclass
 class RetrievalResult:
-    rows: List[dict]
+    rows: list[dict]
     degraded: bool = False
     reason: Optional[str] = None
 
@@ -181,7 +182,7 @@ class Retriever:
         query_vectors: Sequence[Sequence[float]],
         limit: int,
         filters: Optional[RetrievalFilters] = None,
-    ) -> List[RetrievalResult]:
+    ) -> list[RetrievalResult]:
         """One independent KNN per query vector, run concurrently.
 
         Independent by design — see the module docstring on why this is not a
@@ -198,7 +199,7 @@ class Retriever:
 
     async def resolve_titles(
         self, title: str, author: Optional[str] = None, limit: int = 3
-    ) -> List[dict]:
+    ) -> list[dict]:
         """Fuzzy-match a reader-supplied title/author against the catalog."""
         if not (title or "").strip():
             return []
@@ -212,7 +213,7 @@ class Retriever:
         self,
         limit: int,
         filters: Optional[RetrievalFilters] = None,
-    ) -> List[dict]:
+    ) -> list[dict]:
         """Popularity-ranked fallback, used when there is no query vector at all.
 
         Reached by a reader with almost no history, or when no embedding provider
@@ -249,7 +250,7 @@ class Retriever:
             )
         return [_row_to_dict(row) for row in rows]
 
-    async def catalog_stats(self) -> Dict[str, Any]:
+    async def catalog_stats(self) -> dict[str, Any]:
         """Corpus-level values the popularity term needs.
 
         Computed here rather than materialized because it is two aggregates over

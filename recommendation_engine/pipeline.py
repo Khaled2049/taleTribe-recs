@@ -16,8 +16,9 @@ Order matters and is not arbitrary:
 """
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import List, Optional, Sequence
+from typing import Optional
 
 from recommendation_engine.fusion import merge_candidate_records
 from recommendation_engine.mmr import diversify, intra_list_diversity
@@ -44,9 +45,9 @@ class RankedItem:
     story_id: str
     title: str
     author: Optional[str]
-    genres: List[str]
-    themes: List[str]
-    tone: List[str]
+    genres: list[str]
+    themes: list[str]
+    tone: list[str]
     core_premise: Optional[str]
     published_year: Optional[int]
     score: float
@@ -75,7 +76,7 @@ class RankedItem:
 
 @dataclass
 class RankedResult:
-    items: List[RankedItem] = field(default_factory=list)
+    items: list[RankedItem] = field(default_factory=list)
     degraded: bool = False
     diversity: Optional[float] = None
     candidates_considered: int = 0

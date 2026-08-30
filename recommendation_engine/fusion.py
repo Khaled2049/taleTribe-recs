@@ -19,7 +19,7 @@ The output is normalized back onto [0, 1] so it can be substituted directly for
 cosine similarity as the `sem` term in the scoring blend.
 """
 
-from typing import Dict, Hashable, Iterable, List, Mapping, Sequence, Tuple
+from collections.abc import Hashable, Iterable, Mapping, Sequence
 
 DEFAULT_RRF_K = 60
 
@@ -27,7 +27,7 @@ DEFAULT_RRF_K = 60
 def reciprocal_rank_fusion(
     ranked_lists: Sequence[Sequence[Hashable]],
     k: float = DEFAULT_RRF_K,
-) -> Dict[Hashable, float]:
+) -> dict[Hashable, float]:
     """Fuse ranked ID lists into raw RRF scores.
 
     `k` damps the influence of top positions: with k=60, ranks 1 and 2 score
@@ -39,7 +39,7 @@ def reciprocal_rank_fusion(
     already ordered best-first.
     """
     k = max(1.0, float(k))
-    scores: Dict[Hashable, float] = {}
+    scores: dict[Hashable, float] = {}
     for ranked in ranked_lists:
         for position, item_id in enumerate(ranked, start=1):
             scores[item_id] = scores.get(item_id, 0.0) + 1.0 / (k + position)
@@ -60,7 +60,7 @@ def max_rrf_score(n_lists: int, k: float = DEFAULT_RRF_K) -> float:
 def fuse_normalized(
     ranked_lists: Sequence[Sequence[Hashable]],
     k: float = DEFAULT_RRF_K,
-) -> Dict[Hashable, float]:
+) -> dict[Hashable, float]:
     """Fuse and normalize to (0, 1].
 
     An item first in every list scores exactly 1.0.
@@ -78,7 +78,7 @@ def fuse_normalized(
 def fuse_and_rank(
     ranked_lists: Sequence[Sequence[Hashable]],
     k: float = DEFAULT_RRF_K,
-) -> List[Tuple[Hashable, float]]:
+) -> list[tuple[Hashable, float]]:
     """Fused (id, normalized_score) pairs, best first.
 
     Ties break on the id so the ordering is deterministic. Without that, two
@@ -93,7 +93,7 @@ def merge_candidate_records(
     ranked_lists: Sequence[Sequence[Mapping]],
     id_field: str = "id",
     k: float = DEFAULT_RRF_K,
-) -> List[dict]:
+) -> list[dict]:
     """Fuse lists of row mappings, keeping one record per id.
 
     Convenience for the retrieval path, which gets full rows back from Postgres
@@ -101,12 +101,12 @@ def merge_candidate_records(
     scores are collected into `per_query_similarity` so an explanation can say
     *which* of the reader's books a recommendation came from.
     """
-    id_lists: List[List[Hashable]] = []
-    records: Dict[Hashable, dict] = {}
-    per_query: Dict[Hashable, List[float]] = {}
+    id_lists: list[list[Hashable]] = []
+    records: dict[Hashable, dict] = {}
+    per_query: dict[Hashable, list[float]] = {}
 
     for ranked in ranked_lists:
-        ids: List[Hashable] = []
+        ids: list[Hashable] = []
         for row in ranked:
             item_id = row[id_field]
             ids.append(item_id)
@@ -117,7 +117,7 @@ def merge_candidate_records(
                 per_query.setdefault(item_id, []).append(float(similarity))
         id_lists.append(ids)
 
-    out: List[dict] = []
+    out: list[dict] = []
     for item_id, fused_score in fuse_and_rank(id_lists, k):
         record = records[item_id]
         record["semantic"] = fused_score

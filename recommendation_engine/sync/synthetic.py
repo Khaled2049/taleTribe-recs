@@ -27,9 +27,10 @@ mechanisms actually get tested.
 
 import logging
 import random
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Iterator, List, Optional, Sequence
+from typing import Optional
 
 from recommendation_engine.sync.interactions import (
     KIND_LIKE,
@@ -70,8 +71,8 @@ class CatalogItem:
     """The minimum a generator needs to know about a book."""
 
     story_id: str
-    genres: List[str] = field(default_factory=list)
-    themes: List[str] = field(default_factory=list)
+    genres: list[str] = field(default_factory=list)
+    themes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -79,8 +80,8 @@ class Persona:
     """A synthetic reader's taste. Hand-authorable or LLM-authorable if wanted."""
 
     user_id: str
-    genres: List[str]
-    themes: List[str]
+    genres: list[str]
+    themes: list[str]
     activity: str
     target_count: int
     # Some readers rate generously, some harshly. Without this every average rating
@@ -95,7 +96,7 @@ def build_personas(
     items: Sequence[CatalogItem],
     count: int,
     rng: random.Random,
-) -> List[Persona]:
+) -> list[Persona]:
     """Invent readers whose tastes are drawn from what the catalog actually holds.
 
     Sampling affinities from real catalog genres/themes rather than a fixed list
@@ -109,7 +110,7 @@ def build_personas(
             "catalog has no genres; load the corpus before generating readers"
         )
 
-    personas: List[Persona] = []
+    personas: list[Persona] = []
     for index in range(count):
         tier = _weighted_choice(
             [(name, weight) for name, weight, _ in ACTIVITY_TIERS], rng
@@ -147,7 +148,7 @@ def _weighted_choice(pairs, rng: random.Random):
 
 def _popularity_weights(
     items: Sequence[CatalogItem], rng: random.Random
-) -> List[float]:
+) -> list[float]:
     """Assign each book a latent popularity on a Zipf-like curve.
 
     This is what produces a realistic long tail: a handful of books collect many
@@ -191,7 +192,7 @@ def generate(
 
     # Affinity index, so a reader's candidate pool is a lookup rather than a scan
     # over the whole catalog per pick.
-    by_genre: Dict[str, List[int]] = {}
+    by_genre: dict[str, list[int]] = {}
     for index, item in enumerate(items):
         for genre in item.genres:
             by_genre.setdefault(genre, []).append(index)
@@ -199,7 +200,7 @@ def generate(
     now = now or REFERENCE_NOW
 
     for persona in people:
-        preferred: List[int] = []
+        preferred: list[int] = []
         for genre in persona.genres:
             preferred.extend(by_genre.get(genre, ()))
         preferred = list(dict.fromkeys(preferred))
@@ -290,7 +291,7 @@ def _sample_by_weight(pool, weights: Sequence[float], rng: random.Random) -> int
     return indices[-1]
 
 
-async def load_catalog(pool, limit: Optional[int] = None) -> List[CatalogItem]:
+async def load_catalog(pool, limit: Optional[int] = None) -> list[CatalogItem]:
     """Read the eligible catalog, which is what readers can plausibly interact with."""
     rows = await pool.fetch(
         "SELECT story_id, genres, themes "

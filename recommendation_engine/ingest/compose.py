@@ -14,7 +14,7 @@ so re-reading every published story on each poll costs nothing.
 import hashlib
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Optional
 
 _WHITESPACE = re.compile(r"\s+")
 
@@ -30,17 +30,17 @@ class NormalizedItem:
 
     title: str
     author: Optional[str] = None
-    genres: List[str] = field(default_factory=list)
+    genres: list[str] = field(default_factory=list)
     core_premise: Optional[str] = None
-    themes: List[str] = field(default_factory=list)
-    tone: List[str] = field(default_factory=list)
+    themes: list[str] = field(default_factory=list)
+    tone: list[str] = field(default_factory=list)
 
 
 def _clean(value: Optional[str]) -> str:
     return _WHITESPACE.sub(" ", value or "").strip()
 
 
-def _clean_list(values: Optional[List[str]]) -> List[str]:
+def _clean_list(values: Optional[list[str]]) -> list[str]:
     """Dedupe case-insensitively while preserving the given order.
 
     Order is preserved rather than sorted because the normalization step emits
@@ -48,7 +48,7 @@ def _clean_list(values: Optional[List[str]]) -> List[str]:
     embedding than the trailing ones.
     """
     seen = set()
-    out: List[str] = []
+    out: list[str] = []
     for value in values or []:
         cleaned = _clean(value)
         if not cleaned:
@@ -69,7 +69,7 @@ def compose_embed_input(item: NormalizedItem) -> str:
     model will happily find similar to every other authorless book, quietly
     clustering 14% of the corpus (2,382 records) by a missing value.
     """
-    lines: List[str] = [f"Title: {_clean(item.title)}"]
+    lines: list[str] = [f"Title: {_clean(item.title)}"]
 
     author = _clean(item.author)
     if author:

@@ -21,7 +21,7 @@ import asyncio
 import json
 import logging
 import sys
-from typing import List, Optional, cast
+from typing import Optional, cast
 
 from embedding_provider import get_embedding_provider
 from recommendation_engine.config import RecSettings
@@ -110,8 +110,8 @@ async def run(args: _QueryArgs) -> int:
         config = ScoringConfig.from_mapping(await db.load_config())
         stats = CatalogStats.from_row(await retriever.catalog_stats())
 
-        query_vectors: List[List[float]] = []
-        exclude: List[int] = []
+        query_vectors: list[list[float]] = []
+        exclude: list[int] = []
 
         # Seed from catalog titles: resolve each, then search with its stored
         # vector. No embedding call needed, so this path works with no API key.
@@ -168,7 +168,7 @@ async def run(args: _QueryArgs) -> int:
             await embedder.aclose()
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Query the recommender locally.")
     parser.add_argument(
         "--title",
