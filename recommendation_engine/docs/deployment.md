@@ -98,8 +98,7 @@ gcloud run jobs execute novelsync-recs-refresh \
   --project=story-6f89f --region=us-central1 --wait
 ~~~
 
-Never use --rebuild-index against the serving database: it drops the HNSW
-index before rebuilding it. Scheduled runs use incremental ingest.
+Scheduled runs use incremental ingest.
 
 ## Verification
 
@@ -117,15 +116,12 @@ database.item_count > 0
 database.eligible_count > 0
 ~~~
 
-Verify the database boundary after migration:
-
-~~~sql
-SET ROLE recs_service;
-SELECT count(*) FROM public.stories;          -- succeeds
-SELECT count(*) FROM recommendations.items;  -- succeeds
-SELECT count(*) FROM public.reading_progress; -- permission denied
-RESET ROLE;
-~~~
+The database boundary needs no manual check. A missing recommendations-schema
+grant fails this health check (schema_present reads information_schema, which
+lists only tables the role can access), a missing catalog grant fails the
+ingest job with permission denied, and story-data's
+TestRecommendationRolePrivileges asserts in CI that recs_service cannot read
+reading_progress, story_likes or story_ratings.
 
 ## Enabling and stopping the schedule
 
@@ -139,6 +135,8 @@ again to prevent future nightly executions.
 
 ## Rollback
 
-Reapply an earlier immutable image tag with Terraform. Migrations are additive
+Reapply an earlier immutable image tag with Terraform. Only the three most recent
+images are kept: each deploy applies an Artifact Registry cleanup policy
+(KEEP_IMAGE_COUNT in the deploy workflow) that deletes the rest. Migrations are additive
 so older service revisions remain compatible. All recommendation data can be
 re-derived in the same order as the initial load.

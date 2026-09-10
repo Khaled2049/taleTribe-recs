@@ -4,11 +4,7 @@ Follows the repo convention: env vars set at import time before the module under
 test is imported, `pytestmark` at module level, no conftest.
 """
 
-import os
-
 import pytest
-
-os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "test-project")
 
 from recommendation_engine.config import (  # noqa: E402
     LOCAL_DEV_DSN,

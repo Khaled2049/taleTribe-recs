@@ -5,11 +5,8 @@ constructed vectors where the correct pick is unambiguous.
 """
 
 import math
-import os
 
 import pytest
-
-os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "test-project")
 
 from recommendation_engine.fusion import (  # noqa: E402
     DEFAULT_RRF_K,

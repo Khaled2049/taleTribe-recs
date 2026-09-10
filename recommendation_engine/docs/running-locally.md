@@ -82,11 +82,6 @@ in `recommendations.ingest_runs.cursor`; the next run starts past it. `--full`
 ignores the cursor, which is cheap — a row whose `embed_input_sha` is unchanged is
 never re-embedded.
 
-`--rebuild-index` exists but is **not** part of a normal run. It drops the HNSW
-graph before recreating it, so every query falls back to a sequential scan for the
-duration. It was worth it for a 15k-row bulk load; against an incremental ingest on
-a shared database it costs more than it saves. Never run it against live traffic.
-
 **Resumable at two levels**, so re-running is cheap and safe: derived premises are
 cached on the summary hash, and rows whose `embed_input_sha` is unchanged aren't
 re-embedded. Re-running after a crash pays only for what's missing.

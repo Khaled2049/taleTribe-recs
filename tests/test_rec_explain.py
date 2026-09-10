@@ -4,12 +4,9 @@ No network: the Gemini client is a fake.
 """
 
 import json
-import os
 from typing import cast
 
 import pytest
-
-os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "test-project")
 
 from recommendation_engine import explain as explain_mod  # noqa: E402
 from recommendation_engine import hyde as hyde_mod  # noqa: E402

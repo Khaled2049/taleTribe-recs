@@ -38,11 +38,12 @@ from datetime import datetime
 from typing import Optional
 
 from embedding_provider import (
+    TaskType,
     get_embedding_provider,
     verify_embedding_dimension,
 )
 from recommendation_engine.config import RecSettings
-from recommendation_engine.db import Database
+from recommendation_engine.db import Database, rows_affected
 from recommendation_engine.embeddings import QueryEmbedder
 from recommendation_engine.env import load_env
 from recommendation_engine.ingest.compose import (
@@ -60,7 +61,6 @@ logging.basicConfig(format="%(levelname)s %(message)s", level=logging.INFO)
 logger = logging.getLogger("recs.ingest.platform")
 
 RUN_KIND = "platform_sync"
-TASK_TYPE_DOCUMENT = "RETRIEVAL_DOCUMENT"
 
 # How many stories are normalized, embedded and committed per round trip.
 # Bounds memory and gives incremental, resumable progress.
@@ -319,29 +319,7 @@ async def _retire_unpublished(pool) -> int:
         "FROM stories s WHERE s.id = i.story_id AND NOT s.is_published "
         "AND i.is_eligible"
     )
-    return int(result.rsplit(" ", 1)[-1]) if result else 0
-
-
-async def rebuild_hnsw_index(pool) -> None:
-    """Drop and rebuild the HNSW graph.
-
-    Not part of a normal run. It was worth it for a 15k-row bulk load; against
-    incremental ingest it costs more than it saves, and it must never run
-    against the shared database while traffic is being served — the index is
-    gone for the duration, so every query falls back to a sequential scan.
-    """
-    logger.info("rebuilding HNSW index")
-    async with pool.acquire() as conn:
-        await conn.execute("SET maintenance_work_mem = '512MB'")
-        await conn.execute(
-            "DROP INDEX IF EXISTS recommendations.items_embedding_hnsw_idx"
-        )
-        await conn.execute(
-            "CREATE INDEX items_embedding_hnsw_idx ON recommendations.items "
-            "USING hnsw (embedding vector_cosine_ops) "
-            "WITH (m = 16, ef_construction = 200) WHERE is_eligible"
-        )
-    logger.info("HNSW index rebuilt")
+    return rows_affected(result)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -354,27 +332,28 @@ async def _process_chunk(
     chunk: Sequence[StoryRecord],
     normalizer: Optional[Normalizer],
     query_embedder: QueryEmbedder,
-    embedder,
+    model_id: str,
     stats: LoadStats,
 ) -> None:
     stats.considered += len(chunk)
 
     normalizations = {}
     if normalizer is not None:
+        summaries = [(r, summary_text(r)) for r in chunk]
         normalizations = await normalizer.normalize_many(
-            [
-                (r.story_id, r.title, r.author, summary_text(r))
-                for r in chunk
-                if summary_text(r)
-            ]
+            [(r.story_id, r.title, r.author, text) for r, text in summaries if text]
         )
 
-    model_id = embedder.model_id
     known_shas = await _existing_shas(
-        db.read_pool, [r.story_id for r in chunk], model_id, TASK_TYPE_DOCUMENT
+        db.read_pool,
+        [r.story_id for r in chunk],
+        model_id,
+        TaskType.RETRIEVAL_DOCUMENT,
     )
 
-    pending: list[tuple] = []  # (record, normalization, embed_input, sha)
+    # (record, normalization, item, embed_input, sha). The item is kept so the
+    # stored columns come from the same derivation as the embedded text.
+    pending: list[tuple] = []
     for record in chunk:
         normalization = normalizations.get(record.story_id)
         item = to_normalized_item(record, normalization)
@@ -384,7 +363,7 @@ async def _process_chunk(
         if known_shas.get(record.story_id) == sha:
             stats.skipped_unchanged += 1
             continue
-        pending.append((record, normalization, embed_input, sha))
+        pending.append((record, normalization, item, embed_input, sha))
 
     if not pending:
         return
@@ -395,7 +374,7 @@ async def _process_chunk(
     # index entirely. A one-sentence description lands here, by design.
     embeddable = []
     for entry in pending:
-        _, normalization, _, _ = entry
+        _, normalization, _, _, _ = entry
         if normalizer is None:
             embeddable.append(entry)
         elif normalization is None:
@@ -408,23 +387,23 @@ async def _process_chunk(
     vectors: dict[str, list] = {}
     if embeddable:
         computed = await query_embedder.embed_documents(
-            [entry[2] for entry in embeddable]
+            [entry[3] for entry in embeddable]
         )
         vectors = {entry[0].story_id: vec for entry, vec in zip(embeddable, computed)}
         stats.embedded += len(computed)
 
     rows = []
-    for record, normalization, embed_input, sha in pending:
+    for record, normalization, item, embed_input, sha in pending:
         vector = vectors.get(record.story_id)
         rows.append(
             (
                 record.story_id,
-                record.title,
-                record.author,
-                [record.category] if record.category else [],
-                normalization.core_premise if normalization else None,
-                list(normalization.themes) if normalization else [],
-                list(normalization.tone) if normalization else [],
+                item.title,
+                item.author,
+                item.genres,
+                item.core_premise,
+                item.themes,
+                item.tone,
                 record.created_at.year if record.created_at else None,
                 record.word_count,
                 record.chapter_count,
@@ -436,7 +415,7 @@ async def _process_chunk(
                 sha,
                 vector,
                 model_id,
-                TASK_TYPE_DOCUMENT,
+                TaskType.RETRIEVAL_DOCUMENT,
             )
         )
 
@@ -450,14 +429,15 @@ async def run(
     batch_size: int = 8,
     concurrency: int = 4,
     skip_normalization: bool = False,
-    rebuild_index: bool = False,
     full: bool = False,
     dry_run: bool = False,
 ) -> LoadStats:
     settings = RecSettings()
     stats = LoadStats()
 
-    db = Database(write_dsn=settings.write_dsn, read_dsn=settings.read_dsn)
+    # Both pools on the primary: the run reads its own writes (the cursor, the
+    # skip check), which a read replica may not have yet.
+    db = Database(write_dsn=settings.write_dsn, read_dsn=settings.write_dsn)
     await db.connect()
 
     embedder = None
@@ -513,7 +493,9 @@ async def run(
 
         for start in range(0, len(records), chunk_size):
             chunk = records[start : start + chunk_size]
-            await _process_chunk(db, chunk, normalizer, query_embedder, embedder, stats)
+            await _process_chunk(
+                db, chunk, normalizer, query_embedder, embedder.model_id, stats
+            )
             logger.info(
                 "progress %d/%d upserted=%d embedded=%d skipped=%d",
                 min(start + chunk_size, len(records)),
@@ -529,9 +511,6 @@ async def run(
             stats.normalize = normalizer.stats.as_dict()
         if llm is not None:
             stats.usage = llm.usage.as_dict()
-
-        if rebuild_index:
-            await rebuild_hnsw_index(db.write_pool)
 
         # Advance the cursor only on success, and only as far as was actually
         # read — a partial run must not skip what it never saw.
@@ -568,7 +547,6 @@ class _IngestArgs(argparse.Namespace):
     batch_size: int
     concurrency: int
     skip_normalization: bool
-    rebuild_index: bool
     full: bool
     dry_run: bool
 
@@ -585,11 +563,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--skip-normalization",
         action="store_true",
         help="Skip the LLM pass (title + category only; plumbing tests)",
-    )
-    parser.add_argument(
-        "--rebuild-index",
-        action="store_true",
-        help="Rebuild the HNSW graph afterwards. Never against live traffic.",
     )
     parser.add_argument(
         "--full",
@@ -612,7 +585,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                 batch_size=args.batch_size,
                 concurrency=args.concurrency,
                 skip_normalization=args.skip_normalization,
-                rebuild_index=args.rebuild_index,
                 full=args.full,
                 dry_run=args.dry_run,
             )

@@ -20,81 +20,12 @@ env:
   PROJECT_ID: story-6f89f
   REGION: us-central1
   REPOSITORY: novelsync-recs
-  STORY_DATA_REPOSITORY: Khaled2049/story-data
+  KEEP_IMAGE_COUNT: "3"
   SCHEDULER_PAUSED: ${{ vars.RECS_SCHEDULER_PAUSED || 'true' }}
 
 jobs:
   test:
-    name: Full test suite
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    permissions:
-      contents: read
-
-    services:
-      postgres:
-        image: pgvector/pgvector:pg16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: postgres
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-
-    env:
-      RECS_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
-      USE_MOCK: "true"
-      GOOGLE_CLOUD_PROJECT: test-project
-
-    steps:
-      - name: Checkout recommendations
-        uses: actions/checkout@v4
-
-      - name: Checkout story-data migrations
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.STORY_DATA_REPOSITORY }}
-          path: _story-data
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: _story-data/go.mod
-          cache-dependency-path: _story-data/go.sum
-
-      - name: Apply story-data schema
-        working-directory: _story-data
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres?sslmode=disable
-        run: |
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE ROLE recs_service NOLOGIN'
-          go run ./cmd/api migrate
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
-        with:
-          version: 2.1.3
-          virtualenvs-create: true
-          virtualenvs-in-project: true
-
-      - name: Install dependencies
-        run: poetry install --with dev
-
-      - name: Check and test
-        run: |
-          poetry run black --check .
-          poetry run isort --check-only .
-          poetry run ruff check --select E7,E9,F .
-          poetry run python -m pytest tests/ -q
+    uses: ./.github/workflows/test.yml
 
   deploy:
     name: Build and deploy
@@ -138,6 +69,31 @@ jobs:
             --repository-format=docker --location="$REGION" \
             --project="$PROJECT_ID" \
             --description="NovelSync recommendation service images"
+
+      # Each deploy pushes an immutable :sha image. Keep the newest
+      # KEEP_IMAGE_COUNT for rollback and delete the rest, so storage does not
+      # grow forever. Same policy as novelsync-agents; --no-dry-run makes the
+      # deletions real.
+      - name: Apply Artifact Registry cleanup policy
+        run: |
+          cat > "$RUNNER_TEMP/cleanup-policy.json" <<EOF
+          [
+            {
+              "name": "keep-recent",
+              "action": {"type": "Keep"},
+              "mostRecentVersions": {"keepCount": $KEEP_IMAGE_COUNT}
+            },
+            {
+              "name": "delete-stale",
+              "action": {"type": "Delete"},
+              "condition": {"tagState": "ANY"}
+            }
+          ]
+          EOF
+          gcloud artifacts repositories set-cleanup-policies "$REPOSITORY" \
+            --location="$REGION" --project="$PROJECT_ID" \
+            --policy="$RUNNER_TEMP/cleanup-policy.json" \
+            --no-dry-run
 
       - name: Configure Docker
         run: gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet

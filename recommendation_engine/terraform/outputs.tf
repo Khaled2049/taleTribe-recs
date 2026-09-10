@@ -8,11 +8,11 @@ output "service_name" {
 }
 
 output "ingest_job_name" {
-  value = google_cloud_run_v2_job.ingest.name
+  value = google_cloud_run_v2_job.batch["ingest"].name
 }
 
 output "refresh_job_name" {
-  value = google_cloud_run_v2_job.refresh.name
+  value = google_cloud_run_v2_job.batch["refresh"].name
 }
 
 output "workflow_name" {

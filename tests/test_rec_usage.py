@@ -10,15 +10,12 @@ answer that.
 Follows the repo convention: env at import time, `pytestmark` at module level.
 """
 
-import os
-
 import pytest
 from pydantic import ValidationError
 
-os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "test-project")
-
 from recommendation_engine.config import RecSettings  # noqa: E402
 from recommendation_engine.usage import (  # noqa: E402
+    _NO_LIMIT,
     EXPLAIN,
     SEARCH,
     DailyBudgetExceeded,
@@ -45,12 +42,6 @@ class _Pool:
         self.calls: list[tuple] = []
 
     async def fetchrow(self, sql, *args):
-        self.calls.append((sql, args))
-        if self.raises is not None:
-            raise self.raises
-        return self.result
-
-    async def fetchval(self, sql, *args):
         self.calls.append((sql, args))
         if self.raises is not None:
             raise self.raises
@@ -142,7 +133,7 @@ async def test_platform_budget_alone_still_meters():
 
     assert await meter.charge("u1", SEARCH) == 7
     _, args = pool.calls[0]
-    assert args[2] == 2**31 - 1, "a disabled user budget becomes a guard that "
+    assert args[2] == _NO_LIMIT, "a disabled user budget becomes a guard that "
     assert args[3] == 1000
 
 
@@ -153,7 +144,7 @@ async def test_user_budget_alone_still_meters():
     assert await meter.charge("u1", SEARCH) == 2
     _, args = pool.calls[0]
     assert args[2] == 10
-    assert args[3] == 2**31 - 1
+    assert args[3] == _NO_LIMIT
 
 
 async def test_unknown_kind_is_unlimited_rather_than_a_crash():

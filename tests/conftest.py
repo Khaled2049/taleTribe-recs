@@ -31,20 +31,25 @@ def story_id_for(key: str) -> str:
     return str(uuid.uuid5(TEST_STORY_NAMESPACE, key))
 
 
-async def require_recommendations_schema(dsn: str) -> None:
-    """Skip the calling test unless `recommendations.items` exists at `dsn`."""
+async def require_recommendations_schema(dsn: str, *tables: str) -> None:
+    """Skip the calling test unless these `recommendations` tables exist at
+    `dsn` — just `items` when none are named."""
+    wanted = tables or ("items",)
     conn = await asyncpg.connect(dsn)
     try:
-        present = await conn.fetchval(
-            "SELECT 1 FROM information_schema.tables "
-            "WHERE table_schema = 'recommendations' AND table_name = 'items'"
+        rows = await conn.fetch(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'recommendations' AND table_name = ANY($1::text[])",
+            list(wanted),
         )
     finally:
         await conn.close()
-    if not present:
+    missing = sorted(set(wanted) - {row["table_name"] for row in rows})
+    if missing:
         pytest.skip(
-            "no `recommendations` schema in RECS_TEST_DATABASE_URL; apply "
-            "story-data's migrations to that database first (make migrate)"
+            f"missing recommendations.{', recommendations.'.join(missing)} in "
+            "RECS_TEST_DATABASE_URL; apply story-data's migrations to that "
+            "database first (make migrate)"
         )
 
 

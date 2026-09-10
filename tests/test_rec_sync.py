@@ -3,13 +3,10 @@
 The loader and aggregation need a database and live in test_rec_sync_integration.py.
 """
 
-import os
 import random
 from datetime import datetime, timezone
 
 import pytest
-
-os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "test-project")
 
 from recommendation_engine.sync import synthetic  # noqa: E402
 from recommendation_engine.sync.interactions import (  # noqa: E402

@@ -112,6 +112,17 @@ class ExplainRequest(BaseModel):
     seed_item_ids: list[int] = Field(default_factory=list)
 
 
+def _api_error(
+    status: int, code: str, message: str, details: Optional[dict] = None
+) -> HTTPException:
+    """The `{code, message, details}` detail server.py renders as the stable
+    error envelope."""
+    return HTTPException(
+        status_code=status,
+        detail={"code": code, "message": message, "details": details},
+    )
+
+
 def build_router(verify_internal_token) -> APIRouter:
     """Build the router. The auth dependency is injected so `server.py` keeps
     ownership of how callers are verified."""
@@ -125,83 +136,57 @@ def build_router(verify_internal_token) -> APIRouter:
     ) -> None:
         """Admit a request, charging the token-spending ones against both guards.
 
-        `llm_kind` is None for a route that cannot reach the LLM at all — a
-        caller must not spend budget on a generation that was never going to
-        happen, so the decision is made at the call site, where whether the LLM
-        is actually reachable is known.
+        `llm_kind` names the budget a token-spending route draws on, and is None
+        for a route that never reaches the LLM. With no LLM configured nothing
+        is generated, so nothing is charged — decided here, once, rather than
+        restated at every call site.
 
         Order matters: burst first, then the day. A request the bucket is about
         to reject should not consume a day's allowance on its way out.
         """
         state = recommendation_state(request)
         if not await state.rate_limiter.allow(user_id):
-            raise HTTPException(
-                status_code=429,
-                detail={
-                    "code": "RATE_LIMITED",
-                    "message": "Too many requests; slow down.",
-                    "details": None,
-                },
-            )
-        if llm_kind is None:
+            raise _api_error(429, "RATE_LIMITED", "Too many requests; slow down.")
+        if llm_kind is None or state.llm is None:
             return
 
         if not await state.llm_rate_limiter.allow(user_id):
-            raise HTTPException(
-                status_code=429,
-                detail={
-                    "code": "LLM_RATE_LIMITED",
-                    "message": (
-                        "Too many generation requests; these are not credit-metered "
-                        "and are rate limited separately."
-                    ),
-                    "details": None,
-                },
+            raise _api_error(
+                429,
+                "LLM_RATE_LIMITED",
+                "Too many generation requests; these are not credit-metered "
+                "and are rate limited separately.",
             )
 
         try:
             await state.llm_meter.charge(user_id, llm_kind)
         except usage.DailyBudgetExceeded as exc:
-            raise HTTPException(
-                status_code=429,
-                detail={
-                    "code": "LLM_DAILY_LIMIT",
-                    "message": (
-                        f"Daily limit of {exc.limit} reached. "
-                        "It resets at midnight UTC."
-                    ),
-                    "details": {"kind": exc.kind, "limit": exc.limit},
-                },
+            raise _api_error(
+                429,
+                "LLM_DAILY_LIMIT",
+                f"Daily limit of {exc.limit} reached. It resets at midnight UTC.",
+                {"kind": exc.kind, "limit": exc.limit},
             ) from exc
         except usage.PlatformBudgetExceeded as exc:
             # Deliberately not phrased as the caller's fault: they have budget
             # left, and the honest thing to tell them is that the feature is
             # closed for the day rather than that they asked for too much.
-            raise HTTPException(
-                status_code=429,
-                detail={
-                    "code": "LLM_PLATFORM_DAILY_LIMIT",
-                    "message": (
-                        "Story discovery has reached its limit for today across "
-                        "the platform. It resets at midnight UTC."
-                    ),
-                    "details": {"kind": exc.kind, "limit": exc.limit},
-                },
+            raise _api_error(
+                429,
+                "LLM_PLATFORM_DAILY_LIMIT",
+                "Story discovery has reached its limit for today across "
+                "the platform. It resets at midnight UTC.",
+                {"kind": exc.kind, "limit": exc.limit},
             ) from exc
         except usage.MeterUnavailable as exc:
             # Fail closed, unlike the in-memory bucket above. This path spends
             # real money outside creditProxy; a charge that cannot be recorded
             # must not be authorized. Ranking is unaffected and still serves.
-            raise HTTPException(
-                status_code=503,
-                detail={
-                    "code": "LLM_METER_UNAVAILABLE",
-                    "message": (
-                        "Generation is unavailable because usage cannot be "
-                        "recorded right now."
-                    ),
-                    "details": None,
-                },
+            raise _api_error(
+                503,
+                "LLM_METER_UNAVAILABLE",
+                "Generation is unavailable because usage cannot be recorded "
+                "right now.",
             ) from exc
 
     async def _load_targets(request: Request, item_ids: list[int]) -> list:
@@ -244,9 +229,10 @@ def build_router(verify_internal_token) -> APIRouter:
         Uses the **precomputed** `user_taste` vector, so there is no embedding call
         on this path at all — which is what makes it the fast one.
 
-        Until the Firestore signals export exists nothing populates `user_taste`,
-        so every reader currently falls through to popularity. That is reported
-        honestly in `mode` rather than dressed up as personalization.
+        `user_taste` is built by the nightly refresh from the signals story-data
+        derives. A reader with fewer than three signals falls through to
+        popularity, and that is reported honestly in `mode` rather than dressed
+        up as personalization.
         """
         await _check_rate(request, payload.user_id)
         state = recommendation_state(request)
@@ -302,13 +288,8 @@ def build_router(verify_internal_token) -> APIRouter:
         HyDE when enabled.
         """
         if not payload.prompt and not payload.books:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "code": "INVALID_REQUEST",
-                    "message": "provide `prompt`, `books`, or both",
-                    "details": None,
-                },
+            raise _api_error(
+                400, "INVALID_REQUEST", "provide `prompt`, `books`, or both"
             )
 
         state = recommendation_state(request)
@@ -317,13 +298,13 @@ def build_router(verify_internal_token) -> APIRouter:
             settings.recs_enable_hyde if payload.use_hyde is None else payload.use_hyde
         )
         # Only the HyDE path spends tokens, so only it draws on the tighter bucket
-        # and the daily search budget. `state.llm is None` means no key is
-        # configured and the generation below is skipped, so it must not charge.
-        spends_tokens = bool(payload.prompt and wants_hyde and state.llm is not None)
+        # and the daily search budget. One value decides both whether to charge
+        # and whether to generate, so the two cannot disagree.
+        hyde_client = state.llm if payload.prompt and wants_hyde else None
         await _check_rate(
             request,
             payload.user_id,
-            llm_kind=usage.SEARCH if spends_tokens else None,
+            llm_kind=usage.SEARCH if hyde_client is not None else None,
         )
         config, stats = await cached.get(state.db, state.retriever)
 
@@ -351,18 +332,13 @@ def build_router(verify_internal_token) -> APIRouter:
         if payload.prompt:
             embedder = state.query_embedder
             if not embedder.available:
-                raise HTTPException(
-                    status_code=503,
-                    detail={
-                        "code": "EMBEDDER_UNAVAILABLE",
-                        "message": "no embedding provider configured",
-                        "details": None,
-                    },
+                raise _api_error(
+                    503, "EMBEDDER_UNAVAILABLE", "no embedding provider configured"
                 )
             text = payload.prompt
-            if wants_hyde and state.llm is not None:
+            if hyde_client is not None:
                 result = await hyde_mod.generate(
-                    state.llm,
+                    hyde_client,
                     payload.prompt,
                     max_output_tokens=settings.recs_hyde_max_output_tokens,
                 )
@@ -433,14 +409,8 @@ def build_router(verify_internal_token) -> APIRouter:
         The mode that works through a Firebase Functions proxy, which buffers
         responses and so cannot stream.
         """
-        # `explain_many` returns empty explanations when no client is configured,
-        # so charge only when there is one to spend against.
         state = recommendation_state(request)
-        await _check_rate(
-            request,
-            payload.user_id,
-            llm_kind=usage.EXPLAIN if state.llm is not None else None,
-        )
+        await _check_rate(request, payload.user_id, llm_kind=usage.EXPLAIN)
 
         targets = await _load_targets(request, payload.item_ids)
         if not targets:
@@ -485,30 +455,14 @@ def build_router(verify_internal_token) -> APIRouter:
                 int(part) for part in (seed_item_ids or "").split(",") if part.strip()
             ]
         except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "code": "INVALID_REQUEST",
-                    "message": "item_ids must be comma-separated integers",
-                    "details": None,
-                },
+            raise _api_error(
+                400, "INVALID_REQUEST", "item_ids must be comma-separated integers"
             )
         if not ids:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "code": "INVALID_REQUEST",
-                    "message": "item_ids is required",
-                    "details": None,
-                },
-            )
+            raise _api_error(400, "INVALID_REQUEST", "item_ids is required")
 
         state = recommendation_state(request)
-        await _check_rate(
-            request,
-            user_id,
-            llm_kind=usage.EXPLAIN if state.llm is not None else None,
-        )
+        await _check_rate(request, user_id, llm_kind=usage.EXPLAIN)
         targets = await _load_targets(request, ids)
         fingerprint = explain_mod.query_fingerprint(query=prompt, seed_item_ids=seeds)
         context = explain_mod.describe_context(prompt, None)

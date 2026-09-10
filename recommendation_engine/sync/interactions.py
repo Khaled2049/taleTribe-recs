@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
+from recommendation_engine.db import rows_affected
 from recommendation_engine.scoring import is_negative_signal, seed_engagement_weight
 
 logger = logging.getLogger(__name__)
@@ -222,7 +223,4 @@ async def purge_synthetic(pool, prefix: str = SYNTHETIC_USER_PREFIX) -> int:
         "DELETE FROM recommendations.interactions WHERE user_id LIKE $1",
         prefix + "%",
     )
-    try:
-        return int(str(result).split()[-1])
-    except (ValueError, IndexError):
-        return 0
+    return rows_affected(result)

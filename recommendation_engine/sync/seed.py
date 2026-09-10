@@ -52,7 +52,9 @@ class _SeedArgs(argparse.Namespace):
 
 async def run(args: _SeedArgs) -> dict:
     settings = RecSettings()
-    db = Database(write_dsn=settings.write_dsn, read_dsn=settings.read_dsn)
+    # Both pools on the primary: a refresh reads what it just wrote, which a
+    # read replica may not have yet.
+    db = Database(write_dsn=settings.write_dsn, read_dsn=settings.write_dsn)
     await db.connect()
     report: dict = {}
     try:

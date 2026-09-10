@@ -5,11 +5,8 @@ captured from a run — a snapshot test would happily lock in a wrong formula.
 """
 
 import math
-import os
 
 import pytest
-
-os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "test-project")
 
 from recommendation_engine.scoring import (
     DEFAULTS,

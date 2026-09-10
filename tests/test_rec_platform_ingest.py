@@ -5,12 +5,9 @@ the shaping between a story row and an embeddable item, because that is where
 a silent quality regression would live.
 """
 
-import os
 from datetime import datetime, timezone
 
 import pytest
-
-os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "test-project")
 
 from recommendation_engine.ingest import platform
 from recommendation_engine.ingest.compose import compose_embed_input

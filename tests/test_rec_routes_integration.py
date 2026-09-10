@@ -20,7 +20,6 @@ TEST_DSN = os.getenv("RECS_TEST_DATABASE_URL", "")
 if TEST_DSN:
     os.environ["RECS_DATABASE_URL"] = TEST_DSN
     os.environ["RECS_DATABASE_URL_RO"] = ""
-os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "test-project")
 os.environ["USE_MOCK"] = "true"
 os.environ["ENVIRONMENT"] = "development"
 # Generous buckets so ordinary assertions do not trip the limiter; the limiter has
@@ -628,20 +627,9 @@ def test_rate_limited_response_uses_the_stable_error_envelope():
 DAILY_USER = "__daily__"
 
 
-async def _require_llm_usage_table():
-    conn = await _connect()
-    try:
-        present = await conn.fetchval(
-            "SELECT 1 FROM information_schema.tables WHERE table_schema = "
-            "'recommendations' AND table_name = 'llm_usage'"
-        )
-    finally:
-        await conn.close()
-    if not present:
-        pytest.skip(
-            "no `recommendations.llm_usage`; apply story-data migration 000022 "
-            "to RECS_TEST_DATABASE_URL first (make migrate)"
-        )
+async def _require_budget_tables():
+    # One statement charges both counters, so every budget test needs both.
+    await require_recommendations_schema(TEST_DSN, "llm_usage", "llm_platform_usage")
 
 
 async def _clear_usage():
@@ -702,7 +690,7 @@ def test_daily_search_budget_blocks_the_request_after_the_limit(monkeypatch):
     import asyncio
 
     asyncio.run(_seed())
-    asyncio.run(_require_llm_usage_table())
+    asyncio.run(_require_budget_tables())
     asyncio.run(_clear_usage())
     try:
         monkeypatch.setenv("RECS_MAX_SEARCHES_PER_DAY_PER_USER", "2")
@@ -728,7 +716,7 @@ def test_daily_budget_survives_a_restart(monkeypatch):
     import asyncio
 
     asyncio.run(_seed())
-    asyncio.run(_require_llm_usage_table())
+    asyncio.run(_require_budget_tables())
     asyncio.run(_clear_usage())
     try:
         monkeypatch.setenv("RECS_MAX_SEARCHES_PER_DAY_PER_USER", "1")
@@ -751,7 +739,7 @@ def test_explanations_do_not_spend_the_search_budget(monkeypatch):
     import asyncio
 
     ids = asyncio.run(_seed())
-    asyncio.run(_require_llm_usage_table())
+    asyncio.run(_require_budget_tables())
     asyncio.run(_clear_usage())
     try:
         monkeypatch.setenv("RECS_MAX_SEARCHES_PER_DAY_PER_USER", "1")
@@ -777,7 +765,7 @@ def test_a_search_that_spends_no_tokens_is_not_charged(monkeypatch):
     import asyncio
 
     asyncio.run(_seed())
-    asyncio.run(_require_llm_usage_table())
+    asyncio.run(_require_budget_tables())
     asyncio.run(_clear_usage())
     try:
         monkeypatch.setenv("RECS_MAX_SEARCHES_PER_DAY_PER_USER", "1")
@@ -809,29 +797,12 @@ def test_a_search_that_spends_no_tokens_is_not_charged(monkeypatch):
 # ══════════════════════════════════════════════════════════════════════════
 
 
-async def _require_platform_usage_table():
-    conn = await _connect()
-    try:
-        present = await conn.fetchval(
-            "SELECT 1 FROM information_schema.tables WHERE table_schema = "
-            "'recommendations' AND table_name = 'llm_platform_usage'"
-        )
-    finally:
-        await conn.close()
-    if not present:
-        pytest.skip(
-            "no `recommendations.llm_platform_usage`; apply story-data migration "
-            "000023 to RECS_TEST_DATABASE_URL first (make migrate)"
-        )
-
-
 def test_platform_cap_stops_a_second_user_who_has_spent_nothing(monkeypatch):
     """The point of a platform ceiling: it is not about who is asking."""
     import asyncio
 
     asyncio.run(_seed())
-    asyncio.run(_require_llm_usage_table())
-    asyncio.run(_require_platform_usage_table())
+    asyncio.run(_require_budget_tables())
     asyncio.run(_clear_usage())
     try:
         monkeypatch.setenv("RECS_MAX_SEARCHES_PER_DAY_PER_USER", "10")
@@ -863,8 +834,7 @@ def test_an_over_budget_user_cannot_drain_the_platform_counter(monkeypatch):
     import asyncio
 
     asyncio.run(_seed())
-    asyncio.run(_require_llm_usage_table())
-    asyncio.run(_require_platform_usage_table())
+    asyncio.run(_require_budget_tables())
     asyncio.run(_clear_usage())
     try:
         monkeypatch.setenv("RECS_MAX_SEARCHES_PER_DAY_PER_USER", "1")
@@ -893,8 +863,7 @@ def test_platform_caps_are_per_kind(monkeypatch):
     import asyncio
 
     ids = asyncio.run(_seed())
-    asyncio.run(_require_llm_usage_table())
-    asyncio.run(_require_platform_usage_table())
+    asyncio.run(_require_budget_tables())
     asyncio.run(_clear_usage())
     try:
         monkeypatch.setenv("RECS_MAX_SEARCHES_PER_DAY_PLATFORM", "1")
@@ -920,8 +889,7 @@ def test_platform_cap_applies_even_with_per_user_budgets_disabled(monkeypatch):
     import asyncio
 
     asyncio.run(_seed())
-    asyncio.run(_require_llm_usage_table())
-    asyncio.run(_require_platform_usage_table())
+    asyncio.run(_require_budget_tables())
     asyncio.run(_clear_usage())
     try:
         monkeypatch.setenv("RECS_MAX_SEARCHES_PER_DAY_PER_USER", "0")

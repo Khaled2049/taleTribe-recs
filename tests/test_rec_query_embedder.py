@@ -1,10 +1,6 @@
 """Unit tests for the query-embedding cache."""
 
-import os
-
 import pytest
-
-os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "test-project")
 
 from embedding_provider import (  # noqa: E402
     EXPECTED_EMBEDDING_DIM,

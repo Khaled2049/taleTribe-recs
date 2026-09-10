@@ -159,10 +159,9 @@ Owns four things worth knowing:
 - **Eligibility reconciliation** (`_retire_unpublished`) — the read only sees
   published stories, so unpublishing is invisible to it. Deletion needs no handling:
   `items.story_id` is a foreign key with `ON DELETE CASCADE`.
-- **`rebuild_hnsw_index()`** — deliberately *not* part of a normal run.
 
-Flags: `--dry-run`, `--full`, `--limit`, `--skip-normalization`, `--rebuild-index`,
-`--chunk-size`, `--batch-size`, `--concurrency`. See [jobs.md](jobs.md).
+Flags: `--dry-run`, `--full`, `--limit`, `--skip-normalization`, `--chunk-size`,
+`--batch-size`, `--concurrency`. See [jobs.md](jobs.md).
 
 ### `normalize_llm.py` — 445 lines
 The LLM pass. `Normalizer` (batches ~8 books, bounded concurrency, splits blocked

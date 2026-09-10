@@ -48,7 +48,7 @@ every field means something specific.
 | `database.connected` | Wrong DSN, database down, or network | Check `RECS_DATABASE_URL`. This is the only failure that is *loud* downstream too. |
 | `database.schema_present` | **story-data has not migrated this database.** An ordering mistake, not a fault. | `(cd repos/story-data && make migrate)`. In production, story-data must deploy first. |
 | `database.pgvector_ok` | pgvector < 0.8.0 | `hnsw.iterative_scan` is unavailable, so *filtered* queries under-return silently. Upgrade the extension. |
-| `database.hnsw_index_present` | The index named `items_embedding_hnsw_idx` is missing | Queries fall back to sequential scan: correct results, terrible latency. Usually means a `--rebuild-index` run died partway. |
+| `database.hnsw_index_present` | The index named `items_embedding_hnsw_idx` is missing | Queries fall back to sequential scan: correct results, terrible latency. story-data's migration 000019 creates it, so it was dropped by hand. |
 | `embedding_dimension_ok` | The embedder is not producing 768 dims | Every vector written from now on is unusable. Check `EXPECTED_EMBEDDING_DIM` in `embedding_provider.py` — it is **duplicated** with taleTribe-agents. |
 | `embed_model_ok` | **The serving embedder disagrees with the catalog.** | See below — this is the subtle one. |
 
@@ -358,7 +358,6 @@ SELECT count(*) AS total,
 | `story-data sync-recs` | **Yes** | Transactional full rebuild. Excludes `synth_%`. |
 | `seed.py --refresh-only` | **Yes** | Pure derivation from `interactions`. Leaves `item_stats` alone if `interactions` is empty. |
 | `seed.py --purge` | Yes, but destructive | Deletes every `synth_*` reader and their taste vectors. Never touches real readers. |
-| **`--rebuild-index`** | **No — not against live traffic** | Drops the HNSW graph before recreating it. Every query is a sequential scan for the duration. |
 
 There is no partial-failure state needing cleanup before a retry.
 

@@ -150,8 +150,8 @@ resumability mechanism for the whole pipeline.
 Stored with full provenance: `embedding`, `embed_model` (`google:gemini-embedding-001`),
 `embed_task_type`, `embed_input`, `embed_input_sha`, `embedded_at`.
 
-The HNSW index is **rebuilt after** a bulk load (`--rebuild-index`) rather than
-maintained across 15k inserts — far faster, and it produces a better-balanced graph.
+The HNSW index belongs to story-data (migration 000019) and is maintained as rows
+are upserted; the ingest never rebuilds it.
 
 ---
 

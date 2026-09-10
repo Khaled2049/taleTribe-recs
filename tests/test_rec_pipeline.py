@@ -7,11 +7,7 @@ noticing that a live query returned the identical score sequence to a mock-
 embedded one.
 """
 
-import os
-
 import pytest
-
-os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "test-project")
 
 from recommendation_engine.fusion import DEFAULT_RRF_K  # noqa: E402
 from recommendation_engine.pipeline import rank  # noqa: E402

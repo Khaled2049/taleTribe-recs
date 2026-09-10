@@ -1,10 +1,6 @@
 """Unit tests for the db layer's pure helpers."""
 
-import os
-
 import pytest
-
-os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "test-project")
 
 from recommendation_engine.db import (  # noqa: E402
     MIN_PGVECTOR_VERSION,

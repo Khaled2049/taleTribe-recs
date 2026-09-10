@@ -114,13 +114,6 @@ hallucinated premise, which is a poisoned vector that looks perfectly fine. Thos
 rows are stored **without** a vector and with `is_eligible = false`, keeping them out
 of the index. A one-sentence description lands here by design.
 
-### `--rebuild-index` is not part of a normal run
-
-It drops the HNSW graph before recreating it, so for the duration every query falls
-back to a sequential scan. It was worth it for a 15k-row bulk load. Against an
-incremental ingest on a database shared with the product API, it costs more than it
-saves. **Never run it against live traffic.**
-
 ### If it doesn't run
 
 Newly published stories are not recommendable, and unpublished ones keep being
@@ -298,8 +291,7 @@ Order matters, so run them as a chain rather than three independent schedules:
 
 **All three are idempotent and safe to re-run.** The ingest skips unchanged rows,
 `sync-recs` is a transactional full rebuild, and `--refresh-only` is pure derivation.
-There is no partial-failure state that needs cleaning up before a retry — the one
-thing that is *not* safe to re-run casually is `--rebuild-index`.
+There is no partial-failure state that needs cleaning up before a retry.
 
 ### Watching them
 

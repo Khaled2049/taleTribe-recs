@@ -6,9 +6,7 @@ hard-fails, and derived `@property`s instead of extra fields. Instantiated once
 inside `create_app()` so tests can monkeypatch env vars before creation.
 
 No env prefix, matching the root Settings — field names map directly to
-SCREAMING_SNAKE env vars (`recs_database_url` → `RECS_DATABASE_URL`), which
-keeps shared vars like `GOOGLE_CLOUD_PROJECT` spelled the way the Firestore
-Admin SDK and the rest of the repo already expect.
+SCREAMING_SNAKE env vars (`recs_database_url` → `RECS_DATABASE_URL`).
 """
 
 import json
@@ -33,8 +31,6 @@ from embedding_provider import (  # noqa: E402
     EXPECTED_EMBEDDING_DIM,
 )
 
-SCHEMA_NAME = "recommendations"
-
 
 class RecSettings(BaseSettings):
     # ── Datastore ────────────────────────────────────────────────────────
@@ -49,8 +45,6 @@ class RecSettings(BaseSettings):
 
     # ── Runtime environment ──────────────────────────────────────────────
     environment: str = "development"
-    google_cloud_project: str = ""  # required only for the Firestore sync path
-    firestore_emulator_host: str = ""
     port: int = 8100
 
     # ── OIDC / service-to-service auth (required in production) ──────────
@@ -133,8 +127,8 @@ class RecSettings(BaseSettings):
     def clamp_daily(cls, v: object) -> int:
         """Clamp to >= 0. Unlike the per-minute buckets, 0 means *unlimited*
         here — a daily budget is opt-out, and an unparseable value must not
-        silently switch it off, so a bad value falls back to the field default
-        rather than to 0."""
+        silently switch it off, so a bad value is rejected rather than read
+        as 0."""
         try:
             return max(0, int(v))  # type: ignore[arg-type]
         except (TypeError, ValueError):
@@ -260,7 +254,8 @@ class RecSettings(BaseSettings):
 
     @property
     def write_dsn(self) -> str:
-        """DSN for migrations, ingest and sync."""
+        """DSN for writes. Batch jobs read through it too, so they see their
+        own writes."""
         return self.recs_database_url.strip()
 
     @property

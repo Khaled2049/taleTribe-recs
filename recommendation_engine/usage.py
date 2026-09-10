@@ -125,16 +125,6 @@ class DailyLlmMeter:
                (SELECT call_count FROM charged_platform) AS platform_count
     """
 
-    _USER_USED_SQL = """
-        SELECT call_count FROM recommendations.llm_usage
-         WHERE user_id = $1 AND day = (now() AT TIME ZONE 'utc')::date AND kind = $2
-    """
-
-    _PLATFORM_USED_SQL = """
-        SELECT call_count FROM recommendations.llm_platform_usage
-         WHERE day = (now() AT TIME ZONE 'utc')::date AND kind = $1
-    """
-
     def __init__(
         self,
         db,
@@ -145,12 +135,6 @@ class DailyLlmMeter:
         self._limits = dict(limits)
         self._platform_limits = dict(platform_limits or {})
 
-    def limit_for(self, kind: str) -> int:
-        return self._limits.get(kind, 0)
-
-    def platform_limit_for(self, kind: str) -> int:
-        return self._platform_limits.get(kind, 0)
-
     async def charge(self, user_id: str, kind: str) -> int | None:
         """Consume one unit of `kind` for `user_id` and for the platform.
 
@@ -159,8 +143,8 @@ class DailyLlmMeter:
         `PlatformBudgetExceeded` when the respective allowance is spent, and
         `MeterUnavailable` when the counters could not be written.
         """
-        user_limit = self.limit_for(kind)
-        platform_limit = self.platform_limit_for(kind)
+        user_limit = self._limits.get(kind, 0)
+        platform_limit = self._platform_limits.get(kind, 0)
         if user_limit <= 0 and platform_limit <= 0:
             return None
 
@@ -191,13 +175,3 @@ class DailyLlmMeter:
             )
             raise PlatformBudgetExceeded(kind, platform_limit)
         return row["user_count"]
-
-    async def used_today(self, user_id: str, kind: str) -> int:
-        """Read a user's count for the day without charging. Diagnostics."""
-        row = await self._db.read_pool.fetchval(self._USER_USED_SQL, user_id, kind)
-        return int(row or 0)
-
-    async def platform_used_today(self, kind: str) -> int:
-        """Read the platform's count for the day without charging."""
-        row = await self._db.read_pool.fetchval(self._PLATFORM_USED_SQL, kind)
-        return int(row or 0)

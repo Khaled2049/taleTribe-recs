@@ -5,14 +5,11 @@ responses, including a scripted SSE stream.
 """
 
 import json
-import os
 from typing import Protocol, cast
 
 import httpx
 import pytest
 from tenacity import wait_none
-
-os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "test-project")
 
 from recommendation_engine.llm import (  # noqa: E402
     DEFAULT_MODEL,

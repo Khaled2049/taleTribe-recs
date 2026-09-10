@@ -24,6 +24,20 @@ MIN_PGVECTOR_VERSION = (0, 8, 0)
 
 HNSW_INDEX_NAME = "items_embedding_hnsw_idx"
 
+# One table from each story-data migration serving depends on: `items` stands
+# for 000019's catalog tables, the other two are the daily budgets from 000022
+# and 000023. A database missing any of them fails health, rather than passing
+# it and then answering every metered request with a 503.
+REQUIRED_TABLES = ("items", "llm_usage", "llm_platform_usage")
+
+
+def rows_affected(status: str) -> int:
+    """The row count from an asyncpg command status such as 'UPDATE 3'."""
+    try:
+        return int(str(status).split()[-1])
+    except (ValueError, IndexError):
+        return 0
+
 
 def _parse_version(raw: str) -> tuple:
     """'0.8.1' -> (0, 8, 1). Trailing non-numeric parts are dropped."""
@@ -209,12 +223,14 @@ class Database:
                 )
             )
 
-            report["schema_present"] = bool(
-                await conn.fetchval(
-                    "SELECT 1 FROM information_schema.tables WHERE table_schema = "
-                    "'recommendations' AND table_name = 'items'"
-                )
+            # information_schema lists only tables this role holds a privilege
+            # on, so this also fails when story-data's grants did not apply.
+            visible = await conn.fetchval(
+                "SELECT count(*) FROM information_schema.tables WHERE table_schema = "
+                "'recommendations' AND table_name = ANY($1::text[])",
+                list(REQUIRED_TABLES),
             )
+            report["schema_present"] = visible == len(REQUIRED_TABLES)
             if report["schema_present"]:
                 counts = await conn.fetchrow(
                     "SELECT COUNT(*) AS total, "

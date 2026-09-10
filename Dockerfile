@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 FROM python:3.11-slim AS builder
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -20,13 +21,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY --from=builder /wheels /wheels
-RUN pip install --no-cache-dir /wheels/* \
- && rm -rf /wheels \
+# Bind-mounted from the builder rather than copied: a COPY layer would keep
+# every wheel in the image even after a later `rm`.
+RUN --mount=type=bind,from=builder,source=/wheels,target=/wheels \
+    pip install --no-cache-dir /wheels/* \
  && useradd --create-home --uid 10001 appuser
 
 COPY embedding_provider.py rate_limit.py ./
 COPY recommendation_engine ./recommendation_engine
+# PYTHONDONTWRITEBYTECODE stops the runtime caching bytecode, so compile it once
+# here instead of on every cold start.
+RUN python -m compileall -q embedding_provider.py rate_limit.py recommendation_engine
 
 USER appuser
 

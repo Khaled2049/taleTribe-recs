@@ -11,6 +11,35 @@ locals {
     var.firebase_functions_service_account,
     var.deployment_service_account,
   ])
+
+  # Every container builds RecSettings, whose production validator requires
+  # these, so the service and both jobs share one definition.
+  common_env = {
+    ENVIRONMENT              = "production"
+    RECS_SERVICE_URL         = local.service_url
+    ALLOWED_SERVICE_ACCOUNTS = local.allowed_service_accounts
+  }
+
+  # Env var -> Secret Manager secret. The service adds its read-replica DSN;
+  # the batch jobs read through the primary in code (they must see their own
+  # writes), so these two are all they need.
+  secret_env = {
+    RECS_DATABASE_URL        = data.google_secret_manager_secret.database_rw.secret_id
+    GOOGLE_AI_STUDIO_API_KEY = data.google_secret_manager_secret.gemini.secret_id
+  }
+
+  # The ingest and refresh jobs differ only in what they run and how long they
+  # may take.
+  batch_jobs = {
+    ingest = {
+      args    = ["-m", "recommendation_engine.ingest.platform"]
+      timeout = "3600s"
+    }
+    refresh = {
+      args    = ["-m", "recommendation_engine.sync.seed", "--refresh-only"]
+      timeout = "900s"
+    }
+  }
 }
 
 resource "google_project_service" "required" {
@@ -111,78 +140,33 @@ resource "google_cloud_run_v2_service" "recs" {
         startup_cpu_boost = true
       }
 
-      env {
-        name  = "ENVIRONMENT"
-        value = "production"
-      }
-      env {
-        name  = "GOOGLE_CLOUD_PROJECT"
-        value = var.project_id
-      }
-      env {
-        name  = "RECS_SERVICE_URL"
-        value = local.service_url
-      }
-      env {
-        name  = "ALLOWED_SERVICE_ACCOUNTS"
-        value = local.allowed_service_accounts
-      }
-      env {
-        name  = "RECS_DB_POOL_MIN"
-        value = "1"
-      }
-      env {
-        name  = "RECS_DB_POOL_MAX"
-        value = "5"
-      }
-      env {
-        name  = "MAX_REQUESTS_PER_MINUTE_PER_USER"
-        value = "30"
-      }
-      env {
-        name  = "MAX_LLM_REQUESTS_PER_MINUTE_PER_USER"
-        value = "6"
-      }
-      env {
-        name  = "RECS_MAX_SEARCHES_PER_DAY_PER_USER"
-        value = "10"
-      }
-      env {
-        name  = "RECS_MAX_EXPLANATIONS_PER_DAY_PER_USER"
-        value = "30"
-      }
-      env {
-        name  = "RECS_MAX_SEARCHES_PER_DAY_PLATFORM"
-        value = "1000"
-      }
-      env {
-        name  = "RECS_MAX_EXPLANATIONS_PER_DAY_PLATFORM"
-        value = "1000"
-      }
-      env {
-        name = "RECS_DATABASE_URL"
-        value_source {
-          secret_key_ref {
-            secret  = data.google_secret_manager_secret.database_rw.secret_id
-            version = "latest"
-          }
+      dynamic "env" {
+        for_each = merge(local.common_env, {
+          RECS_DB_POOL_MIN                       = "1"
+          RECS_DB_POOL_MAX                       = "5"
+          MAX_REQUESTS_PER_MINUTE_PER_USER       = "30"
+          MAX_LLM_REQUESTS_PER_MINUTE_PER_USER   = "6"
+          RECS_MAX_SEARCHES_PER_DAY_PER_USER     = "10"
+          RECS_MAX_EXPLANATIONS_PER_DAY_PER_USER = "30"
+          RECS_MAX_SEARCHES_PER_DAY_PLATFORM     = "1000"
+          RECS_MAX_EXPLANATIONS_PER_DAY_PLATFORM = "1000"
+        })
+        content {
+          name  = env.key
+          value = env.value
         }
       }
-      env {
-        name = "RECS_DATABASE_URL_RO"
-        value_source {
-          secret_key_ref {
-            secret  = data.google_secret_manager_secret.database_ro.secret_id
-            version = "latest"
-          }
-        }
-      }
-      env {
-        name = "GOOGLE_AI_STUDIO_API_KEY"
-        value_source {
-          secret_key_ref {
-            secret  = data.google_secret_manager_secret.gemini.secret_id
-            version = "latest"
+      dynamic "env" {
+        for_each = merge(local.secret_env, {
+          RECS_DATABASE_URL_RO = data.google_secret_manager_secret.database_ro.secret_id
+        })
+        content {
+          name = env.key
+          value_source {
+            secret_key_ref {
+              secret  = env.value
+              version = "latest"
+            }
           }
         }
       }
@@ -220,9 +204,11 @@ resource "google_cloud_run_v2_service_iam_member" "invokers" {
   member   = "serviceAccount:${each.value}"
 }
 
-resource "google_cloud_run_v2_job" "ingest" {
+resource "google_cloud_run_v2_job" "batch" {
+  for_each = local.batch_jobs
+
   project  = var.project_id
-  name     = "novelsync-recs-ingest"
+  name     = "novelsync-recs-${each.key}"
   location = var.region
 
   template {
@@ -232,12 +218,12 @@ resource "google_cloud_run_v2_job" "ingest" {
     template {
       service_account = google_service_account.runtime.email
       max_retries     = 1
-      timeout         = "3600s"
+      timeout         = each.value.timeout
 
       containers {
         image   = var.image
         command = ["python"]
-        args    = ["-m", "recommendation_engine.ingest.platform"]
+        args    = each.value.args
 
         resources {
           limits = {
@@ -246,143 +232,22 @@ resource "google_cloud_run_v2_job" "ingest" {
           }
         }
 
-        env {
-          name  = "ENVIRONMENT"
-          value = "production"
-        }
-        env {
-          name  = "GOOGLE_CLOUD_PROJECT"
-          value = var.project_id
-        }
-        env {
-          name  = "RECS_SERVICE_URL"
-          value = local.service_url
-        }
-        env {
-          name  = "ALLOWED_SERVICE_ACCOUNTS"
-          value = local.allowed_service_accounts
-        }
-        env {
-          name  = "RECS_DB_POOL_MIN"
-          value = "1"
-        }
-        env {
-          name  = "RECS_DB_POOL_MAX"
-          value = "5"
-        }
-        env {
-          name = "RECS_DATABASE_URL"
-          value_source {
-            secret_key_ref {
-              secret  = data.google_secret_manager_secret.database_rw.secret_id
-              version = "latest"
-            }
+        dynamic "env" {
+          for_each = local.common_env
+          content {
+            name  = env.key
+            value = env.value
           }
         }
-        # Batch work must read its own writes immediately; use primary for both
-        # pools even after serving moves to a replica.
-        env {
-          name = "RECS_DATABASE_URL_RO"
-          value_source {
-            secret_key_ref {
-              secret  = data.google_secret_manager_secret.database_rw.secret_id
-              version = "latest"
-            }
-          }
-        }
-        env {
-          name = "GOOGLE_AI_STUDIO_API_KEY"
-          value_source {
-            secret_key_ref {
-              secret  = data.google_secret_manager_secret.gemini.secret_id
-              version = "latest"
-            }
-          }
-        }
-      }
-    }
-  }
-
-  depends_on = [
-    google_project_service.required,
-    google_secret_manager_secret_iam_member.runtime_secrets,
-  ]
-}
-
-resource "google_cloud_run_v2_job" "refresh" {
-  project  = var.project_id
-  name     = "novelsync-recs-refresh"
-  location = var.region
-
-  template {
-    task_count  = 1
-    parallelism = 1
-
-    template {
-      service_account = google_service_account.runtime.email
-      max_retries     = 1
-      timeout         = "900s"
-
-      containers {
-        image   = var.image
-        command = ["python"]
-        args    = ["-m", "recommendation_engine.sync.seed", "--refresh-only"]
-
-        resources {
-          limits = {
-            cpu    = "1"
-            memory = "1Gi"
-          }
-        }
-
-        env {
-          name  = "ENVIRONMENT"
-          value = "production"
-        }
-        env {
-          name  = "GOOGLE_CLOUD_PROJECT"
-          value = var.project_id
-        }
-        env {
-          name  = "RECS_SERVICE_URL"
-          value = local.service_url
-        }
-        env {
-          name  = "ALLOWED_SERVICE_ACCOUNTS"
-          value = local.allowed_service_accounts
-        }
-        env {
-          name  = "RECS_DB_POOL_MIN"
-          value = "1"
-        }
-        env {
-          name  = "RECS_DB_POOL_MAX"
-          value = "5"
-        }
-        env {
-          name = "RECS_DATABASE_URL"
-          value_source {
-            secret_key_ref {
-              secret  = data.google_secret_manager_secret.database_rw.secret_id
-              version = "latest"
-            }
-          }
-        }
-        env {
-          name = "RECS_DATABASE_URL_RO"
-          value_source {
-            secret_key_ref {
-              secret  = data.google_secret_manager_secret.database_rw.secret_id
-              version = "latest"
-            }
-          }
-        }
-        env {
-          name = "GOOGLE_AI_STUDIO_API_KEY"
-          value_source {
-            secret_key_ref {
-              secret  = data.google_secret_manager_secret.gemini.secret_id
-              version = "latest"
+        dynamic "env" {
+          for_each = local.secret_env
+          content {
+            name = env.key
+            value_source {
+              secret_key_ref {
+                secret  = env.value
+                version = "latest"
+              }
             }
           }
         }
@@ -397,11 +262,10 @@ resource "google_cloud_run_v2_job" "refresh" {
 }
 
 resource "google_cloud_run_v2_job_iam_member" "workflow_jobs" {
-  for_each = toset([
-    google_cloud_run_v2_job.ingest.name,
-    google_cloud_run_v2_job.refresh.name,
-    var.story_data_sync_job_name,
-  ])
+  for_each = toset(concat(
+    [for job in google_cloud_run_v2_job.batch : job.name],
+    [var.story_data_sync_job_name],
+  ))
 
   project  = var.project_id
   name     = each.value
@@ -432,9 +296,9 @@ resource "google_workflows_workflow" "pipeline" {
   source_contents = templatefile("${path.module}/pipeline.yaml.tftpl", {
     project_id               = var.project_id
     region                   = var.region
-    ingest_job_name          = google_cloud_run_v2_job.ingest.name
+    ingest_job_name          = google_cloud_run_v2_job.batch["ingest"].name
     story_data_sync_job_name = var.story_data_sync_job_name
-    refresh_job_name         = google_cloud_run_v2_job.refresh.name
+    refresh_job_name         = google_cloud_run_v2_job.batch["refresh"].name
   })
 
   depends_on = [

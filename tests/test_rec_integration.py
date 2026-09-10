@@ -27,7 +27,6 @@ TEST_DSN = os.getenv("RECS_TEST_DATABASE_URL", "")
 if TEST_DSN:
     os.environ["RECS_DATABASE_URL"] = TEST_DSN
     os.environ["RECS_DATABASE_URL_RO"] = ""
-os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "test-project")
 os.environ["USE_MOCK"] = "true"
 os.environ["ENVIRONMENT"] = "development"
 

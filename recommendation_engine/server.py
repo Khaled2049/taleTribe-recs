@@ -164,11 +164,6 @@ def create_app() -> FastAPI:
     # before the app is built.
     settings = RecSettings()
 
-    if settings.environment != "production" and not settings.firestore_emulator_host:
-        # Only the platform-catalog sync path touches Firestore; pointing at the
-        # emulator by default keeps local runs off real GCP.
-        os.environ.setdefault("FIRESTORE_EMULATOR_HOST", "localhost:8080")
-
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # The pool is the one piece of startup that can fail for an operational
