@@ -1,25 +1,28 @@
 main:
   steps:
+    # connector_params belongs inside args: it configures the connector call
+    # itself (how long to wait for the job to finish), and Workflows rejects it
+    # as a sibling of args.
     - ingest_catalog:
         call: googleapis.run.v2.projects.locations.jobs.run
         args:
           name: projects/${project_id}/locations/${region}/jobs/${ingest_job_name}
           body: {}
-        connector_params:
-          timeout: 3600
+          connector_params:
+            timeout: 3600
     - sync_reader_signals:
         call: googleapis.run.v2.projects.locations.jobs.run
         args:
           name: projects/${project_id}/locations/${region}/jobs/${story_data_sync_job_name}
           body: {}
-        connector_params:
-          timeout: 900
+          connector_params:
+            timeout: 900
     - refresh_aggregates:
         call: googleapis.run.v2.projects.locations.jobs.run
         args:
           name: projects/${project_id}/locations/${region}/jobs/${refresh_job_name}
           body: {}
-        connector_params:
-          timeout: 900
+          connector_params:
+            timeout: 900
     - complete:
         return: "recommendation pipeline completed"
