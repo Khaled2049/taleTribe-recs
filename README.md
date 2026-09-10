@@ -23,3 +23,9 @@ Quick links: `running-locally.md` for setup and the HTTP API, `runbook.md` when
 something is broken, `jobs.md` for the three background jobs,
 `security-and-roles.md` for the privacy boundary, and
 `migration-to-story-data.md` for why the database is shared.
+
+Production artifacts live in `Dockerfile`, `.github/workflows/`, and
+`recommendation_engine/terraform/`. Follow
+`recommendation_engine/docs/deployment.md` for the required story-data → recs →
+frontend rollout order and the initial data load; the nightly scheduler is created
+paused until that verification is complete.

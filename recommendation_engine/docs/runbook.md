@@ -364,49 +364,24 @@ There is no partial-failure state needing cleanup before a retry.
 
 ---
 
-## Known issues before deploy
+## Known limitations
 
-Recorded, not yet fixed. Each is a real failure mode with a known trigger.
+These do not block the initial deploy, but each has a real failure mode.
 
-1. **`recs_service` cannot run the ingest.** Migration `000020` grants no `SELECT` on
-   `public`, but `ingest/platform.py` reads `stories`, `story_tags`, `chapters` and
-   `chapter_summaries`, and `_retire_unpublished` does `UPDATE … FROM stories`. The
-   first production ingest run fails with `permission denied for table stories`.
-   Invisible today only because the role does not exist yet. **Deploy blocker** —
-   see [security-and-roles.md](security-and-roles.md) for the two resolutions.
-
-2. **The ingest cursor strands failed rows.** A story stored `is_eligible = false`
+1. **The ingest cursor strands failed rows.** A story stored `is_eligible = false`
    after a low-confidence normalization is never revisited, because the cursor
    advanced past its `updated_at`. The code comment says a later run "can fix it";
    with an incremental cursor it cannot. Only `--full` recovers it.
 
-3. **`catalog_embed_model` reports the majority model.** A minority of rows from a
+2. **`catalog_embed_model` reports the majority model.** A minority of rows from a
    different provider leaves health green with an unusable slice. Use query 3 above
    rather than trusting the field.
 
-4. **`--limit` plus a timestamp-only cursor can skip rows permanently.** The read is
+3. **`--limit` plus a timestamp-only cursor can skip rows permanently.** The read is
    ordered `(updated_at, id)` but the cursor stores only `updated_at`, and the next
    read is strictly `>`. A bulk publish in one transaction gives every row an
    identical `now()`; if a `--limit` cuts between two of them, the second is never
    seen again.
-
-5. **`verify_internal_token` silently no-ops when `RECS_SERVICE_URL` is unset.** A
-   production deploy that omits it is completely unauthenticated at the application
-   layer. Restrict Cloud Run invoker IAM regardless.
-
-6. **CI cannot build its own test schema.** recs no longer owns migrations, so
-   `pr-check` must check out story-data and run goose against the service container —
-   otherwise every integration test silently skips and the deploy rides on unit
-   tests alone.
-
-7. **No deploy artifacts exist.** No `Dockerfile`, `.dockerignore`, `terraform/` or
-   `.github/workflows/` — the only backend repo without them.
-
-8. **No green-path health test.** Two integration tests covering `/health` were
-   removed because the shared dev database makes them unrunnable (the catalog's real
-   Gemini vectors outvote any fixture, and tests run with the mock embedder). A bug
-   that makes health permanently red would now ship unnoticed. Fixing this needs a
-   dedicated test database, not a test change. See [testing.md](testing.md).
 
 ---
 

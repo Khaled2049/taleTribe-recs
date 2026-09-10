@@ -19,6 +19,7 @@ from recommendation_engine.embeddings import QueryEmbedder
 from recommendation_engine.explain import ExplanationCache
 from recommendation_engine.llm import GeminiClient
 from recommendation_engine.retrieval import Retriever
+from recommendation_engine.usage import DailyLlmMeter
 
 
 class RecommendationAppState:
@@ -31,6 +32,7 @@ class RecommendationAppState:
     db: Database
     rate_limiter: PerUserRateLimiter
     llm_rate_limiter: PerUserRateLimiter
+    llm_meter: DailyLlmMeter
     embedder: EmbeddingProvider | None
     query_embedder: QueryEmbedder
     retriever: Retriever

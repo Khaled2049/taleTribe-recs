@@ -68,9 +68,7 @@ async def run(args: _SeedArgs) -> dict:
         if not args.refresh_only and not args.purge:
             catalog = await synthetic.load_catalog(pool, limit=args.catalog_limit)
             if not catalog:
-                raise RuntimeError(
-                    "catalog is empty — ingest published stories first"
-                )
+                raise RuntimeError("catalog is empty — ingest published stories first")
             logger.info("catalog: %d eligible items", len(catalog))
             records = list(
                 synthetic.generate(

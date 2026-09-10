@@ -25,8 +25,9 @@ happens offline, and the request path is one vector query.
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-**None of them are scheduled yet.** All three run on demand only. See
-[deployment.md](deployment.md) for the Cloud Run Jobs + Cloud Scheduler design.
+Terraform creates an ordered Workflow and a nightly Cloud Scheduler trigger. The
+scheduler starts paused for the initial rollout; all three jobs can also be run on
+demand. See [deployment.md](deployment.md) for resource names and rollout commands.
 
 ---
 

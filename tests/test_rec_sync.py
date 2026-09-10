@@ -44,22 +44,10 @@ def _record(**overrides):
 # ══════════════════════════════════════════════════════════════════════════
 
 
-
-
-
-
-
-
-
-
 def test_only_kinds_the_platform_records_are_valid():
     """The format must not promise data the platform cannot produce."""
     assert VALID_KINDS == {KIND_LIKE, KIND_RATING, KIND_PROGRESS}
     assert KIND_COMPLETION not in VALID_KINDS, "completion is derived, never supplied"
-
-
-
-
 
 
 # ══════════════════════════════════════════════════════════════════════════

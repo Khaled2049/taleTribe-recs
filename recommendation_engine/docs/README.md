@@ -18,11 +18,11 @@ and product understanding what the service does and doesn't do.
 | The three background jobs, and what breaks without them | [jobs.md](jobs.md) | medium |
 | How the browser and Firebase Functions call this | [frontend-integration.md](frontend-integration.md) | medium |
 | Database roles, the privacy boundary, threats | [security-and-roles.md](security-and-roles.md) | medium |
-| What the 431 tests cover, and what they don't | [testing.md](testing.md) | reference |
+| What the 455 tests cover, and what they don't | [testing.md](testing.md) | reference |
 | How a story gets embedded; how personas work | [data-lifecycle.md](data-lifecycle.md) | long |
 | What each Python file is for | [file-reference.md](file-reference.md) | reference |
 | Commands that work, and what things cost | [running-locally.md](running-locally.md) | reference |
-| How to deploy it: services, security, scale | [deployment.md](deployment.md) | long, not built |
+| How to deploy it: services, security, scale | [deployment.md](deployment.md) | production runbook |
 | How you would measure whether it works | [evaluation.md](evaluation.md) | long, not built |
 | Every bug we hit, and how each was found | [development-log.md](development-log.md) | long, historical |
 | Why the schema lives in story-data | [migration-to-story-data.md](migration-to-story-data.md) | long, historical |
@@ -73,26 +73,26 @@ database safe.
 
 **Working:** all five endpoints, both recommendation modes, HyDE, explanations
 (batched and streamed), the full three-term scoring formula, the platform catalog
-ingest, synthetic reader signals, and the story-data signals derivation. 431 tests.
+ingest, synthetic reader signals, and the story-data signals derivation. 455 tests.
 
-**Built but never run against real traffic:** the signals pipeline. Nothing schedules
-the three jobs, so `n_interactions` is 0 everywhere, the cold-start ramp holds α at 0,
-and **every recommendation today is 100% content similarity**. The popularity and CF
-terms are implemented, tested, and completely inert.
+**Ready for its first production run:** the ordered signals pipeline. Terraform now
+creates the two recs jobs, a Workflow that also invokes story-data's signal job, and
+a nightly scheduler. The scheduler is deliberately created paused until the initial
+load and end-to-end checks pass.
 
-**Not built:** scheduling, the evaluation harness, and deployment. This is the only
-backend repo with no `Dockerfile`, `terraform/` or `.github/workflows/`.
+**Not built:** the evaluation harness. Deployment artifacts now live in `Dockerfile`,
+`recommendation_engine/terraform/`, and `.github/workflows/`.
 
 **Costs:** an incremental ingest over an unchanged catalog is **free** — unchanged
-rows are never re-embedded. First ingest is ~$0.0002 per story. The uncapped paths are
-HyDE and explanations, which bypass creditProxy and are not credit-metered; see
-[running-locally.md](running-locally.md#what-things-cost).
+rows are never re-embedded. First ingest is ~$0.0002 per story. HyDE and explanations
+bypass creditProxy, so recs enforces durable per-user and platform-wide daily budgets
+in Postgres in addition to per-minute burst limits.
 
-## Before merging and deploying
+## Before deploying
 
-[runbook.md](runbook.md#known-issues-before-deploy) lists eight known issues. The one
-that will bite first: **`recs_service` has no `SELECT` on `public`, but the ingest
-reads `stories`** — so the first production ingest run fails on permission denied.
+Follow the repository rollout order in [deployment.md](deployment.md#rollout-order).
+In particular, story-data migrations 19 through 23 and its `sync-recs` job must land
+before recs; keep the scheduler paused until the first ordered pipeline run passes.
 
 ## If you read one section
 

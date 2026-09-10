@@ -99,9 +99,7 @@ def test_same_inputs_give_the_same_key():
     ],
 )
 def test_every_component_changes_the_key(kwargs):
-    base = dict(
-        model="m", story_id="story-1", embed_input_sha="sha", fingerprint="fp"
-    )
+    base = dict(model="m", story_id="story-1", embed_input_sha="sha", fingerprint="fp")
     assert explain_mod.cache_key(**base) != explain_mod.cache_key(**{**base, **kwargs})
 
 

@@ -102,7 +102,6 @@ class LoadStats:
         return data
 
 
-
 async def _resolve_items(pool, story_ids: Sequence[str]) -> dict[str, int]:
     """Map story_id -> items.id."""
     if not story_ids:

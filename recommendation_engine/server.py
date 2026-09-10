@@ -37,6 +37,7 @@ from embedding_provider import (
     verify_embedding_dimension,
 )
 from rate_limit import PerUserRateLimiter
+from recommendation_engine import usage
 from recommendation_engine.app_state import (
     recommendation_app_state,
     recommendation_state,
@@ -230,6 +231,20 @@ def create_app() -> FastAPI:
     state.llm_rate_limiter = PerUserRateLimiter(
         settings.max_llm_requests_per_minute_per_user
     )
+    # ...and the durable half of that pair. The buckets above bound bursts; this
+    # bounds the day, in Postgres, so it survives a restart and is shared across
+    # instances rather than multiplied by them.
+    state.llm_meter = usage.DailyLlmMeter(
+        state.db,
+        {
+            usage.SEARCH: settings.recs_max_searches_per_day_per_user,
+            usage.EXPLAIN: settings.recs_max_explanations_per_day_per_user,
+        },
+        {
+            usage.SEARCH: settings.recs_max_searches_per_day_platform,
+            usage.EXPLAIN: settings.recs_max_explanations_per_day_platform,
+        },
+    )
 
     # Shared with the story agent so the 768-dim contract has one definition.
     # A dimension mismatch here means every vector written is unqueryable
@@ -332,7 +347,9 @@ def create_app() -> FastAPI:
         active_model = getattr(embedder, "model_id", None) if embedder else None
         payload["catalog_embed_model"] = catalog_model
         payload["embedder_model"] = active_model
-        payload["embed_model_ok"] = catalog_model is None or catalog_model == active_model
+        payload["embed_model_ok"] = (
+            catalog_model is None or catalog_model == active_model
+        )
         if not payload["embed_model_ok"]:
             logger.error(
                 "embedder_model_mismatch",

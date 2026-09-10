@@ -317,18 +317,16 @@ ordering mistakes the old single-database setup could not produce:
 
 ---
 
-## Deployment shape (designed, not built)
+## Deployment shape
 
 Summarised here; the full treatment — services, container, security, scale, production
 readiness — is in [deployment.md](deployment.md).
 
-Its own Cloud Run service, Dockerfile, Terraform root and workflows — **none of
-which exist yet.** This is the only backend repo with no `Dockerfile`,
-`.dockerignore`, `terraform/` or `.github/workflows/`; story-data, taleTribe-agents
-and creditProxy all have them, and story-data's `deploy.yml` is the closest model to
-copy.
+The service has its own container, Terraform state, Cloud Run service, two Cloud Run
+jobs, deployment workflows, and a paused nightly scheduler. The Workflow preserves
+the required ingest → signal sync → aggregate refresh ordering.
 
-Deferred by choice, so the design could settle first. Five things will need attention:
+Five operational constraints remain important:
 
 1. **Neon, with a dedicated read-only compute** for serving. Vector scans never share
    compute with billing.
@@ -344,7 +342,7 @@ Deferred by choice, so the design could settle first. Five things will need atte
    directly, which in turn needs in-process Firebase token verification.
    `GET /recommend/explain/stream` is built and tested but currently unreachable from
    a browser for exactly this reason.
-5. **Deploy ordering, which is now a hard constraint.** story-data must deploy and
+5. **Deploy ordering is a hard constraint.** story-data must deploy and
    migrate *before* recs starts, or `schema_present` fails the health check and the
    rollout is rejected. The same applies in CI: `pr-check` cannot build its own test
    schema any more, because this repo no longer owns the migrations.

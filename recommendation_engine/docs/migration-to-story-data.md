@@ -495,12 +495,12 @@ adds.
 
 ## What this migration did not do
 
-- **Scheduling.** The three jobs — `ingest.platform`, `story-data sync-recs`,
-  `seed.py --refresh-only` — run on demand. Cloud Scheduler → Cloud Run Jobs is
-  designed in `docs/deployment.md` and not wired.
-- **Deployment.** recs still runs locally only. Nothing points at a Neon project,
-  and the `recs_service` role does not exist anywhere yet, so migration 000020's
-  grant has never had anything to grant to.
+- **Scheduling.** Terraform now creates the two recs Cloud Run Jobs, invokes
+  story-data's job between them in a Workflow, and creates a nightly scheduler
+  paused for the initial rollout.
+- **Deployment.** The container, Terraform root, and GitHub workflows are now
+  implemented. Production still has to follow the story-data-first rollout in
+  `docs/deployment.md`.
 - **Confirming pgvector >= 0.8 on Neon.** The local image satisfies it; the
   production project is unverified. `/health` will catch it, loudly, on first
   deploy.

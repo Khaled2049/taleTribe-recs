@@ -1,6 +1,6 @@
-# Testing — what 431 tests cover, and what they don't
+# Testing — what 455 tests cover, and what they don't
 
-16 test files plus `conftest.py`. **431 tests: 360 unit, 71 integration.**
+17 test files plus `conftest.py`. **455 tests: 376 unit, 79 integration.**
 
 The organising idea: this is a system whose failures are *silent*, so the tests are
 weighted toward pinning down things that would otherwise degrade without erroring —
@@ -201,16 +201,12 @@ database was owned by the tests; story-data's shared dev database never will be.
 
 ---
 
-## CI — the thing that has to change before deploy
+## CI
 
-There is no `.github/workflows/` in this repo. When one is written, it cannot follow
-story-data's pattern directly.
+Both workflows start `pgvector/pgvector:pg16`, check out story-data, create the
+production-only `recs_service` role, and run story-data's migrations before pytest.
+That makes the SQL integration suite and the least-privilege boundary part of CI
+instead of allowing schema-dependent tests to skip silently.
 
-story-data's `pr-check` spins up a `pgvector/pgvector:pg16` service container and runs
-**its own** goose migrations against it. recs cannot: it does not own the migrations
-any more. So `pr-check.yml` must either check out story-data and run goose against
-the service container, or vendor the migration SQL.
-
-**If it does neither, `require_recommendations_schema` skips every integration test
-and CI passes on 360 unit tests while reporting success.** That is the failure mode
-to design against — a green CI that tested none of the SQL.
+PR validation also checks formatting, Ruff, Terraform, and the production Docker
+build. The deployment workflow repeats the test suite before it can publish or apply.

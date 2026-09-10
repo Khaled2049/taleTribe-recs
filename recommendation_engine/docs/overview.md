@@ -68,13 +68,13 @@ near-identical books.
 
 All five API endpoints, both recommendation modes, HyDE for free-text queries,
 explanations both batched and streamed, and the full three-term scoring formula.
-431 automated tests.
+455 automated tests.
 
 ### What is honestly not done
 
-- **Real reader data isn't connected.** Behavioral recommendations currently run on
-  *synthetic* readers we generate. The Firestore connection is designed for and
-  scaffolded, but not written.
+- **The real reader-signal pipeline has not run in production yet.** story-data now
+  derives likes, ratings, and reading progress into the recommendations schema; the
+  first ordered production load is still pending.
 - **Quality is unmeasured.** There's no evaluation harness, so "are these good
   recommendations?" is currently answered by reading the output and forming an opinion.
   Every tuning decision is a guess. **Deliberately deferred until there are real
@@ -82,8 +82,9 @@ explanations both batched and streamed, and the full three-term scoring formula.
   recovers the generator's own assumptions, which is circular while producing
   confident-looking decimals. The full plan is written up in
   [evaluation.md](evaluation.md) so it can be picked up rather than re-derived.
-- **Nothing is deployed.** It runs locally only, by choice, so the design could
-  settle before infrastructure was committed to.
+- **The production stack is implemented but not rolled out yet.** The container,
+  Terraform, CI/CD, private Cloud Run service, ordered jobs, and paused scheduler
+  are ready for the story-data-first rollout.
 
 ## Things product should know
 
@@ -92,10 +93,9 @@ the CMU corpus was in the catalog, and the API carried an `off_platform` flag so
 a UI could badge the ones that were dead ends. Both are gone; nothing needs
 badging now.
 
-**Explanations are not credit-metered.** They call Gemini directly rather than going
-through creditProxy, because that's the only way to get true token-by-token
-streaming and cancellation. The cost controls are a deterministic cache (the same
-question about the same book is free forever) and a tight per-user rate limit (6/min).
+**Explanations do not use creditProxy.** They call Gemini directly, so recs applies
+its own controls: a deterministic cache, a 6/min per-process burst limit, and
+durable per-user and platform-wide daily ceilings stored in Postgres.
 
 **Cold-start is handled explicitly, not accidentally.** A brand-new story with zero
 readers is scored **100% on content similarity**. It is never penalised for being
@@ -143,4 +143,4 @@ nothing regardless of configuration.
 | The three background jobs and what breaks without them | [jobs.md](jobs.md) |
 | How the browser and Firebase Functions call this | [frontend-integration.md](frontend-integration.md) |
 | Database roles, the privacy boundary, and threats | [security-and-roles.md](security-and-roles.md) |
-| What the 431 tests cover, and what they don't | [testing.md](testing.md) |
+| What the 455 tests cover, and what they don't | [testing.md](testing.md) |

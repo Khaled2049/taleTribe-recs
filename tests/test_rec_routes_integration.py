@@ -27,6 +27,14 @@ os.environ["ENVIRONMENT"] = "development"
 # its own dedicated test that sets them low.
 os.environ["MAX_REQUESTS_PER_MINUTE_PER_USER"] = "500"
 os.environ["MAX_LLM_REQUESTS_PER_MINUTE_PER_USER"] = "500"
+# Unlimited daily budgets by default, for two reasons: ordinary assertions must
+# not trip them, and 0 skips the meter's round trip entirely, so the rest of this
+# file does not depend on `recommendations.llm_usage` existing. The daily budget
+# has its own tests below, which require the table and skip without it.
+os.environ["RECS_MAX_SEARCHES_PER_DAY_PER_USER"] = "0"
+os.environ["RECS_MAX_EXPLANATIONS_PER_DAY_PER_USER"] = "0"
+os.environ["RECS_MAX_SEARCHES_PER_DAY_PLATFORM"] = "0"
+os.environ["RECS_MAX_EXPLANATIONS_PER_DAY_PLATFORM"] = "0"
 
 import asyncpg
 from conftest import (
@@ -606,4 +614,323 @@ def test_rate_limited_response_uses_the_stable_error_envelope():
         assert payload["error"]["code"] == "LLM_RATE_LIMITED"
     finally:
         os.environ["MAX_LLM_REQUESTS_PER_MINUTE_PER_USER"] = "500"
+        asyncio.run(_cleanup())
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Daily LLM budget
+#
+# The bucket tests above prove burst control. These prove the thing a bucket
+# structurally cannot: a ceiling that survives a restart, because it lives in
+# Postgres rather than in one process's memory.
+# ══════════════════════════════════════════════════════════════════════════
+
+DAILY_USER = "__daily__"
+
+
+async def _require_llm_usage_table():
+    conn = await _connect()
+    try:
+        present = await conn.fetchval(
+            "SELECT 1 FROM information_schema.tables WHERE table_schema = "
+            "'recommendations' AND table_name = 'llm_usage'"
+        )
+    finally:
+        await conn.close()
+    if not present:
+        pytest.skip(
+            "no `recommendations.llm_usage`; apply story-data migration 000022 "
+            "to RECS_TEST_DATABASE_URL first (make migrate)"
+        )
+
+
+async def _clear_usage():
+    """Reset both counters for the day.
+
+    The per-user rows are scoped to this file's fixture users. The platform row
+    has no user in its key, so there is nothing to scope it by — it deletes
+    today's row outright, which is safe because only tests write it in a
+    development database.
+    """
+    conn = await _connect()
+    try:
+        await conn.execute(
+            "DELETE FROM recommendations.llm_usage WHERE user_id = ANY($1::text[])",
+            [DAILY_USER, DAILY_USER + "2"],
+        )
+        await conn.execute(
+            "DELETE FROM recommendations.llm_platform_usage "
+            "WHERE day = (now() AT TIME ZONE 'utc')::date"
+        )
+    finally:
+        await conn.close()
+
+
+async def _platform_usage_row(kind):
+    conn = await _connect()
+    try:
+        return await conn.fetchval(
+            "SELECT call_count FROM recommendations.llm_platform_usage "
+            "WHERE kind = $1 AND day = (now() AT TIME ZONE 'utc')::date",
+            kind,
+        )
+    finally:
+        await conn.close()
+
+
+async def _usage_row(kind):
+    conn = await _connect()
+    try:
+        return await conn.fetchval(
+            "SELECT call_count FROM recommendations.llm_usage WHERE user_id = $1 "
+            "AND kind = $2 AND day = (now() AT TIME ZONE 'utc')::date",
+            DAILY_USER,
+            kind,
+        )
+    finally:
+        await conn.close()
+
+
+def _search(client, prompt="a lonely lighthouse keeper", **extra):
+    return client.post(
+        "/recommend/adhoc",
+        json={"user_id": DAILY_USER, "prompt": prompt, **extra},
+    )
+
+
+def test_daily_search_budget_blocks_the_request_after_the_limit(monkeypatch):
+    import asyncio
+
+    asyncio.run(_seed())
+    asyncio.run(_require_llm_usage_table())
+    asyncio.run(_clear_usage())
+    try:
+        monkeypatch.setenv("RECS_MAX_SEARCHES_PER_DAY_PER_USER", "2")
+        with _client() as client:
+            codes = [_search(client).status_code for _ in range(3)]
+            blocked = _search(client)
+
+        assert codes == [200, 200, 429]
+        payload = blocked.json()
+        assert payload["success"] is False
+        assert payload["error"]["code"] == "LLM_DAILY_LIMIT"
+        assert payload["error"]["details"] == {"kind": "search", "limit": 2}
+        # The refused calls must not keep incrementing — a counter that ran past
+        # its own ceiling would misreport usage and could overflow over time.
+        assert asyncio.run(_usage_row("search")) == 2
+    finally:
+        asyncio.run(_clear_usage())
+        asyncio.run(_cleanup())
+
+
+def test_daily_budget_survives_a_restart(monkeypatch):
+    """The point of the whole exercise: an in-memory bucket forgets on deploy."""
+    import asyncio
+
+    asyncio.run(_seed())
+    asyncio.run(_require_llm_usage_table())
+    asyncio.run(_clear_usage())
+    try:
+        monkeypatch.setenv("RECS_MAX_SEARCHES_PER_DAY_PER_USER", "1")
+        with _client() as client:
+            assert _search(client).status_code == 200
+
+        # A brand new app: fresh process state, fresh buckets, same database.
+        with _client() as client:
+            second = _search(client)
+
+        assert second.status_code == 429
+        assert second.json()["error"]["code"] == "LLM_DAILY_LIMIT"
+    finally:
+        asyncio.run(_clear_usage())
+        asyncio.run(_cleanup())
+
+
+def test_explanations_do_not_spend_the_search_budget(monkeypatch):
+    """Separate kinds, so "Why this story?" cannot eat a reader's searches."""
+    import asyncio
+
+    ids = asyncio.run(_seed())
+    asyncio.run(_require_llm_usage_table())
+    asyncio.run(_clear_usage())
+    try:
+        monkeypatch.setenv("RECS_MAX_SEARCHES_PER_DAY_PER_USER", "1")
+        monkeypatch.setenv("RECS_MAX_EXPLANATIONS_PER_DAY_PER_USER", "5")
+        with _client() as client:
+            for _ in range(3):
+                client.post(
+                    "/recommend/explain",
+                    json={"user_id": DAILY_USER, "item_ids": [ids["a"]]},
+                )
+            search = _search(client)
+
+        assert search.status_code == 200, "explanations must not consume searches"
+        assert asyncio.run(_usage_row("explain")) == 3
+        assert asyncio.run(_usage_row("search")) == 1
+    finally:
+        asyncio.run(_clear_usage())
+        asyncio.run(_cleanup())
+
+
+def test_a_search_that_spends_no_tokens_is_not_charged(monkeypatch):
+    """Seed-book retrieval and `use_hyde: false` never reach the LLM."""
+    import asyncio
+
+    asyncio.run(_seed())
+    asyncio.run(_require_llm_usage_table())
+    asyncio.run(_clear_usage())
+    try:
+        monkeypatch.setenv("RECS_MAX_SEARCHES_PER_DAY_PER_USER", "1")
+        with _client() as client:
+            assert _search(client, use_hyde=False).status_code == 200
+            books = client.post(
+                "/recommend/adhoc",
+                json={
+                    "user_id": DAILY_USER,
+                    "books": [{"title": "Route Test Alpha"}],
+                },
+            )
+            assert books.status_code == 200
+            # The budget is untouched, so a real search still goes through.
+            assert _search(client).status_code == 200
+
+        assert asyncio.run(_usage_row("search")) == 1
+    finally:
+        asyncio.run(_clear_usage())
+        asyncio.run(_cleanup())
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Platform-wide daily cap
+#
+# The per-user budget bounds one reader's day; multiplied by the user count it
+# bounds nothing. These cover the ceiling that does, and the ordering property
+# that keeps it from being trivially drained.
+# ══════════════════════════════════════════════════════════════════════════
+
+
+async def _require_platform_usage_table():
+    conn = await _connect()
+    try:
+        present = await conn.fetchval(
+            "SELECT 1 FROM information_schema.tables WHERE table_schema = "
+            "'recommendations' AND table_name = 'llm_platform_usage'"
+        )
+    finally:
+        await conn.close()
+    if not present:
+        pytest.skip(
+            "no `recommendations.llm_platform_usage`; apply story-data migration "
+            "000023 to RECS_TEST_DATABASE_URL first (make migrate)"
+        )
+
+
+def test_platform_cap_stops_a_second_user_who_has_spent_nothing(monkeypatch):
+    """The point of a platform ceiling: it is not about who is asking."""
+    import asyncio
+
+    asyncio.run(_seed())
+    asyncio.run(_require_llm_usage_table())
+    asyncio.run(_require_platform_usage_table())
+    asyncio.run(_clear_usage())
+    try:
+        monkeypatch.setenv("RECS_MAX_SEARCHES_PER_DAY_PER_USER", "10")
+        monkeypatch.setenv("RECS_MAX_SEARCHES_PER_DAY_PLATFORM", "2")
+        with _client() as client:
+            first = [_search(client).status_code for _ in range(2)]
+            # A different user, with their whole personal allowance untouched.
+            other = client.post(
+                "/recommend/adhoc",
+                json={"user_id": DAILY_USER + "2", "prompt": "a quiet village"},
+            )
+
+        assert first == [200, 200]
+        assert other.status_code == 429
+        assert other.json()["error"]["code"] == "LLM_PLATFORM_DAILY_LIMIT"
+        assert other.json()["error"]["details"] == {"kind": "search", "limit": 2}
+    finally:
+        asyncio.run(_clear_usage())
+        asyncio.run(_cleanup())
+
+
+def test_an_over_budget_user_cannot_drain_the_platform_counter(monkeypatch):
+    """The whole reason the SQL charges the user first.
+
+    Were it the other way round, one user who had already spent their own
+    allowance could keep incrementing the platform counter with requests that
+    are refused anyway — denying the feature to everyone else.
+    """
+    import asyncio
+
+    asyncio.run(_seed())
+    asyncio.run(_require_llm_usage_table())
+    asyncio.run(_require_platform_usage_table())
+    asyncio.run(_clear_usage())
+    try:
+        monkeypatch.setenv("RECS_MAX_SEARCHES_PER_DAY_PER_USER", "1")
+        monkeypatch.setenv("RECS_MAX_SEARCHES_PER_DAY_PLATFORM", "50")
+        with _client() as client:
+            assert _search(client).status_code == 200
+            refused = [_search(client).status_code for _ in range(20)]
+
+            # Everyone else still has the platform budget they started with.
+            other = client.post(
+                "/recommend/adhoc",
+                json={"user_id": DAILY_USER + "2", "prompt": "a quiet village"},
+            )
+
+        assert set(refused) == {429}
+        assert other.status_code == 200
+        # One charge from each user, and nothing from the 20 refusals.
+        assert asyncio.run(_platform_usage_row("search")) == 2
+    finally:
+        asyncio.run(_clear_usage())
+        asyncio.run(_cleanup())
+
+
+def test_platform_caps_are_per_kind(monkeypatch):
+    """A flood of searches must not close explanations too."""
+    import asyncio
+
+    ids = asyncio.run(_seed())
+    asyncio.run(_require_llm_usage_table())
+    asyncio.run(_require_platform_usage_table())
+    asyncio.run(_clear_usage())
+    try:
+        monkeypatch.setenv("RECS_MAX_SEARCHES_PER_DAY_PLATFORM", "1")
+        monkeypatch.setenv("RECS_MAX_EXPLANATIONS_PER_DAY_PLATFORM", "5")
+        with _client() as client:
+            assert _search(client).status_code == 200
+            assert _search(client).status_code == 429
+            explanation = client.post(
+                "/recommend/explain",
+                json={"user_id": DAILY_USER, "item_ids": [ids["a"]]},
+            )
+
+        assert explanation.status_code == 200
+        assert asyncio.run(_platform_usage_row("search")) == 1
+        assert asyncio.run(_platform_usage_row("explain")) == 1
+    finally:
+        asyncio.run(_clear_usage())
+        asyncio.run(_cleanup())
+
+
+def test_platform_cap_applies_even_with_per_user_budgets_disabled(monkeypatch):
+    """Turning off the per-user budget must not turn off the platform ceiling."""
+    import asyncio
+
+    asyncio.run(_seed())
+    asyncio.run(_require_llm_usage_table())
+    asyncio.run(_require_platform_usage_table())
+    asyncio.run(_clear_usage())
+    try:
+        monkeypatch.setenv("RECS_MAX_SEARCHES_PER_DAY_PER_USER", "0")
+        monkeypatch.setenv("RECS_MAX_SEARCHES_PER_DAY_PLATFORM", "3")
+        with _client() as client:
+            codes = [_search(client).status_code for _ in range(4)]
+
+        assert codes == [200, 200, 200, 429]
+        assert asyncio.run(_platform_usage_row("search")) == 3
+    finally:
+        asyncio.run(_clear_usage())
         asyncio.run(_cleanup())

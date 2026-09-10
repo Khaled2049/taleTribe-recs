@@ -5,8 +5,12 @@ so the two cannot rank differently.
 
 Two rate buckets, for a reason. Ranking is one database round trip and can be
 generous. HyDE and explanations spend Gemini tokens on a path that deliberately
-bypasses creditProxy, so they get a much tighter bucket — together with the
-explanation cache, that is the *only* thing standing between a loop and a bill.
+bypasses creditProxy, so they get a much tighter bucket.
+
+The buckets are per-process, so they bound bursts but not spend. The daily
+budgets in `usage.py` are the durable half: counted in Postgres, shared across
+instances, reset at UTC midnight. Together with the explanation cache, those
+three are the *only* thing standing between a loop and a bill.
 """
 
 import logging
@@ -19,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from recommendation_engine import explain as explain_mod
 from recommendation_engine import hyde as hyde_mod
+from recommendation_engine import usage
 from recommendation_engine.app_state import recommendation_state
 from recommendation_engine.pipeline import rank
 from recommendation_engine.retrieval import RetrievalFilters
@@ -115,7 +120,19 @@ def build_router(verify_internal_token) -> APIRouter:
 
     # ── Helpers ──────────────────────────────────────────────────────────
 
-    async def _check_rate(request: Request, user_id: str, llm: bool = False) -> None:
+    async def _check_rate(
+        request: Request, user_id: str, llm_kind: Optional[str] = None
+    ) -> None:
+        """Admit a request, charging the token-spending ones against both guards.
+
+        `llm_kind` is None for a route that cannot reach the LLM at all — a
+        caller must not spend budget on a generation that was never going to
+        happen, so the decision is made at the call site, where whether the LLM
+        is actually reachable is known.
+
+        Order matters: burst first, then the day. A request the bucket is about
+        to reject should not consume a day's allowance on its way out.
+        """
         state = recommendation_state(request)
         if not await state.rate_limiter.allow(user_id):
             raise HTTPException(
@@ -126,7 +143,10 @@ def build_router(verify_internal_token) -> APIRouter:
                     "details": None,
                 },
             )
-        if llm and not await state.llm_rate_limiter.allow(user_id):
+        if llm_kind is None:
+            return
+
+        if not await state.llm_rate_limiter.allow(user_id):
             raise HTTPException(
                 status_code=429,
                 detail={
@@ -138,6 +158,51 @@ def build_router(verify_internal_token) -> APIRouter:
                     "details": None,
                 },
             )
+
+        try:
+            await state.llm_meter.charge(user_id, llm_kind)
+        except usage.DailyBudgetExceeded as exc:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "LLM_DAILY_LIMIT",
+                    "message": (
+                        f"Daily limit of {exc.limit} reached. "
+                        "It resets at midnight UTC."
+                    ),
+                    "details": {"kind": exc.kind, "limit": exc.limit},
+                },
+            ) from exc
+        except usage.PlatformBudgetExceeded as exc:
+            # Deliberately not phrased as the caller's fault: they have budget
+            # left, and the honest thing to tell them is that the feature is
+            # closed for the day rather than that they asked for too much.
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "LLM_PLATFORM_DAILY_LIMIT",
+                    "message": (
+                        "Story discovery has reached its limit for today across "
+                        "the platform. It resets at midnight UTC."
+                    ),
+                    "details": {"kind": exc.kind, "limit": exc.limit},
+                },
+            ) from exc
+        except usage.MeterUnavailable as exc:
+            # Fail closed, unlike the in-memory bucket above. This path spends
+            # real money outside creditProxy; a charge that cannot be recorded
+            # must not be authorized. Ranking is unaffected and still serves.
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "LLM_METER_UNAVAILABLE",
+                    "message": (
+                        "Generation is unavailable because usage cannot be "
+                        "recorded right now."
+                    ),
+                    "details": None,
+                },
+            ) from exc
 
     async def _load_targets(request: Request, item_ids: list[int]) -> list:
         """Fetch the fields an explanation needs, by id."""
@@ -251,9 +316,14 @@ def build_router(verify_internal_token) -> APIRouter:
         wants_hyde = (
             settings.recs_enable_hyde if payload.use_hyde is None else payload.use_hyde
         )
-        # Only the HyDE path spends tokens, so only it draws on the tighter bucket.
+        # Only the HyDE path spends tokens, so only it draws on the tighter bucket
+        # and the daily search budget. `state.llm is None` means no key is
+        # configured and the generation below is skipped, so it must not charge.
+        spends_tokens = bool(payload.prompt and wants_hyde and state.llm is not None)
         await _check_rate(
-            request, payload.user_id, llm=bool(payload.prompt and wants_hyde)
+            request,
+            payload.user_id,
+            llm_kind=usage.SEARCH if spends_tokens else None,
         )
         config, stats = await cached.get(state.db, state.retriever)
 
@@ -363,8 +433,14 @@ def build_router(verify_internal_token) -> APIRouter:
         The mode that works through a Firebase Functions proxy, which buffers
         responses and so cannot stream.
         """
-        await _check_rate(request, payload.user_id, llm=True)
+        # `explain_many` returns empty explanations when no client is configured,
+        # so charge only when there is one to spend against.
         state = recommendation_state(request)
+        await _check_rate(
+            request,
+            payload.user_id,
+            llm_kind=usage.EXPLAIN if state.llm is not None else None,
+        )
 
         targets = await _load_targets(request, payload.item_ids)
         if not targets:
@@ -427,8 +503,12 @@ def build_router(verify_internal_token) -> APIRouter:
                 },
             )
 
-        await _check_rate(request, user_id, llm=True)
         state = recommendation_state(request)
+        await _check_rate(
+            request,
+            user_id,
+            llm_kind=usage.EXPLAIN if state.llm is not None else None,
+        )
         targets = await _load_targets(request, ids)
         fingerprint = explain_mod.query_fingerprint(query=prompt, seed_item_ids=seeds)
         context = explain_mod.describe_context(prompt, None)

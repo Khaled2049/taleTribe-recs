@@ -99,7 +99,7 @@ is how CI stays green with no `-m` exclusion in `pytest.ini`).
 
 - **`server.py`** — FastAPI app factory (`create_app()`), port 8100 by
   default. Builds `app.state` singletons (db pool, embedder, LLM client,
-  two rate limiters) once at startup.
+  two rate limiters, the daily LLM meter) once at startup.
 - **`routes.py`** — the HTTP surface, all five routes go through
   `pipeline.rank`, the same function `query_cli` uses:
   - `POST /recommend/adhoc` — seed by book titles and/or free-text prompt
@@ -120,9 +120,25 @@ is how CI stays green with no `-m` exclusion in `pytest.ini`).
   collaborative-filtering term (currently stubbed at `cf*0.00`); cold-start
   ramps `alpha` from 0 (pure semantic) as `n_signals` grows.
 - **`hyde.py` / `explain.py`** — the two paths that call Gemini directly.
-  `explain.py` also owns the explanation cache (`ExplanationCache`), which
-  together with the tighter LLM rate bucket is the only thing between a
-  loop and an ungoverned bill.
+  `explain.py` also owns the explanation cache (`ExplanationCache`).
+- **`usage.py`** — the durable daily budgets for those two paths. creditProxy is
+  not in them, so nothing upstream meters them; the in-process bucket bounds
+  bursts but multiplies by the instance count and forgets on deploy. Two
+  ceilings, counted on a UTC day the database assigns, with `search` (HyDE) and
+  `explain` budgeted separately:
+  - **per user** — `recommendations.llm_usage` (story-data migration `000022`),
+    default 10 searches and 30 explanations. Fairness.
+  - **platform-wide** — `llm_platform_usage` (`000023`), default 1000 of each.
+    Solvency: per-user budgets multiply by the user count, so alone they bound
+    nothing in total.
+
+  Both move in one statement whose ordering matters — the platform insert selects
+  `FROM charged_user`, so a user who is already over budget cannot keep driving
+  the platform counter and close the feature for everyone. Charged in
+  `routes._check_rate` before the generation, and **fail-closed**: unlike the
+  bucket, a meter that cannot record a charge must not authorize one. 0 disables
+  a budget; both disabled skips the round trip. Together with the explanation
+  cache, this is what stands between a loop and an ungoverned bill.
 - **`ingest/`** — `platform.py` reads published stories out of story-data (same
   database, no HTTP), normalizes them with an LLM (`normalize_llm.py`), composes
   the embed text (`compose.py`) against a controlled theme/tone vocabulary

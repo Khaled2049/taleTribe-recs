@@ -257,11 +257,11 @@ cached extractions rather than regenerating them.
 | `/recommend/adhoc` with `use_hyde` | one embedding + **one Gemini generation** |
 | `/recommend/explain` | **one Gemini generation per uncached item** |
 
-### The two uncapped paths
+### The two directly metered paths
 
 **HyDE and explanations bypass creditProxy and call Gemini directly**, so unlike
 every other LLM call on the platform they are *not* credit-metered. Nothing debits a
-user's balance for them. The only things between a loop and a bill are:
+user's balance for them. The burst controls are:
 
 - `ExplanationCache` — keyed on
   `sha256(model | prompt_ver | story_id | embed_input_sha | query_fingerprint)`, so
@@ -270,10 +270,10 @@ user's balance for them. The only things between a loop and a bill are:
 - `MAX_LLM_REQUESTS_PER_MINUTE_PER_USER` (default **6**) — a second, tighter rate
   bucket than the 30/min one that governs ranking.
 
-Worst case per user is therefore 6 LLM requests per minute sustained, each
-explaining up to 25 items (the Function's Zod cap). Before opening this to real
-traffic, add a **daily** per-user explanation cap and a Gemini budget alert — both
-are listed in [deployment.md](deployment.md) and neither is built.
+The in-process bucket limits bursts but is multiplied by instance count. Durable
+Postgres counters therefore add per-user defaults of 10 HyDE searches and 30
+explanation requests per UTC day, plus platform-wide defaults of 1,000 for each
+kind. Set a daily value to 0 only when intentionally disabling that ceiling.
 
 ## Useful inspection queries
 
@@ -370,13 +370,13 @@ The power law matters more than it looks: with uniform interaction counts the
 popularity term would be flat, the Bayesian damping would never be exercised, and
 P95 normalization would be meaningless.
 
-## Not built yet
+## Production status
 
 | | |
 |---|---|
-| **Scheduling.** All three jobs run on demand only — see [jobs.md](jobs.md) | not wired |
+| **Scheduling.** Terraform creates the ordered nightly pipeline paused — see [jobs.md](jobs.md) | ready to enable after initial load |
 | Eval harness — see [evaluation.md](evaluation.md) for the full plan | Phase 6 |
-| Neon, Terraform, Cloud Run — see [deployment.md](deployment.md) | deferred |
+| Neon, Terraform, Cloud Run — see [deployment.md](deployment.md) | implemented; first rollout pending |
 
 The signals path itself is *built* (`story-data sync-recs` → `--refresh-only`); it
 has simply never run against real traffic. Until it does, `n_interactions` is 0,

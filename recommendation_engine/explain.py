@@ -110,9 +110,7 @@ class ExplanationTarget:
         )
 
     def key(self, model: str, fingerprint: str) -> str:
-        return cache_key(
-            model, self.story_id, self.embed_input_sha, fingerprint
-        )
+        return cache_key(model, self.story_id, self.embed_input_sha, fingerprint)
 
 
 def build_prompt(target: ExplanationTarget, context: str) -> str:

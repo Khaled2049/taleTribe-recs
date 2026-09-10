@@ -48,13 +48,15 @@ computed by recs and never leaves the `recommendations` schema.
 
 ## The `recs_service` role
 
-Defined in `story-data/migrations/000020_recommendations_role_grant.sql`:
+Defined by story-data migrations `000020_recommendations_role_grant.sql` and
+`000021_recommendations_catalog_grant.sql`:
 
 ```sql
 GRANT USAGE ON SCHEMA public TO recs_service;
 GRANT USAGE ON SCHEMA recommendations TO recs_service;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA recommendations TO recs_service;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA recommendations TO recs_service;
+GRANT SELECT ON stories, story_tags, chapters, chapter_summaries TO recs_service;
 ALTER DEFAULT PRIVILEGES IN SCHEMA recommendations GRANT ... TO recs_service;
 ```
 
@@ -73,36 +75,12 @@ owns the schema and runs goose.
 
 **The whole thing is guarded on the role existing**, so it is a no-op in local
 development and in tests, where one superuser owns everything. That is convenient and
-it is also why the gap below has never been noticed.
+it is also why CI explicitly creates the role before applying migrations.
 
-### ⚠ Known gap: the ingest cannot run as this role
-
-`ingest/platform.py` reads `stories`, `story_tags`, `chapters` and
-`chapter_summaries` — all in `public` — and `_retire_unpublished` runs
-`UPDATE recommendations.items … FROM stories`. The grant above issues **no `SELECT`
-on any `public` table**.
-
-The first time `recs_service` actually exists, the ingest fails with
-`permission denied for table stories`. It has never been observed because the role
-does not exist anywhere yet; local development runs as `postgres`.
-
-The migration plan contains both halves of the contradiction: decision 0.2 says
-"`GRANT USAGE ON SCHEMA recommendations` and nothing on `public`", while decision 0.3
-says "recs polling `stories` is not a privacy boundary crossing." Both are
-defensible; only one is implemented.
-
-**Resolution is a deploy blocker, and there are two honest options:**
-
-1. Add `GRANT SELECT ON stories, story_tags, chapters, chapter_summaries TO
-   recs_service` to a new story-data migration. Simple, and consistent with decision
-   0.3 — these are public data. It widens the role slightly for the serving path too.
-2. Give the *ingest job* a second, separate role with those reads, and leave the
-   serving role confined. More precise, more moving parts. Preferable if the ingest
-   ever runs somewhere the serving container does not.
-
-Option 1 is the smaller change and matches the stated principle. Either way it must
-be decided before the role is created, because the checklist item "create the
-`recs_service` role, then re-run migrations" is what makes the failure appear.
+Migration `000021` is the deliberately small fix for catalog ingest: it grants
+`SELECT` only on the four published-story source tables. It grants nothing on
+`story_likes`, `story_ratings`, or `reading_progress`. The role must exist before
+story-data applies migrations 20 through 23 so all guarded grants take effect.
 
 ---
 
@@ -169,11 +147,11 @@ the network layer fails closed even if the application layer is misconfigured.
 | Threat | Status | What stops it |
 |---|---|---|
 | Reader requests another reader's behavioral recommendations | **Blocked** | Function sets `user_id` from the verified Firebase token; Zod `.strict()` rejects it in the body |
-| recs reads `reading_progress` | **Blocked by design, gap in practice** | `000020` grants no `public` access — but see the ingest gap above |
-| Browser calls Cloud Run directly | **Blocked** (once deployed) | OIDC audience check + Cloud Run invoker IAM |
+| recs reads `reading_progress` | **Blocked** | `000021` grants only the four catalog tables; the CI role test asserts private-table reads fail |
+| Browser calls Cloud Run directly | **Blocked** | OIDC audience check + Cloud Run invoker IAM |
 | OIDC token replayed from another service | **Blocked** | Audience pinned to `RECS_SERVICE_URL`; caller email allowlist |
-| Unauthenticated production deploy | **Not enforced** | `verify_internal_token` silently no-ops when `RECS_SERVICE_URL` is empty |
-| Ungoverned Gemini spend | **Weakly mitigated** | Explanation cache + 6 req/min bucket. No daily cap, no budget alert. |
+| Unauthenticated production deploy | **Blocked** | Production settings require `RECS_SERVICE_URL`; Cloud Run IAM also fails closed |
+| Ungoverned Gemini spend | **Bounded in service** | Burst buckets plus durable per-user and platform-wide daily Postgres ceilings; configure a Google Cloud billing alert separately |
 | Prompt injection via story text | **Not mitigated** | See below |
 | Reading history leaks from `interactions` | **Not mitigated beyond the role** | No pseudonymisation; raw Firebase uids |
 
@@ -227,9 +205,9 @@ Three secrets, and nothing else:
 
 | Secret | Used by |
 |---|---|
-| `recs-postgres-dsn-rw` | ingest, sync |
+| `recs-postgres-dsn-rw` | ingest, refresh, and durable request counters |
 | `recs-postgres-dsn-ro` | request serving |
-| `recs-gemini-api-key` | HyDE, explanations, normalization, embeddings |
+| `google-ai-studio-api-key` | HyDE, explanations, normalization, embeddings |
 
 The service account should hold `roles/secretmanager.secretAccessor` on exactly those
 three and nothing more. **No Postgres superuser** — recs connects as `recs_service`,
@@ -251,13 +229,13 @@ production validators that reject the local DSN when `ENVIRONMENT=production`. R
 
 ## What to check before going to production
 
-- [ ] **Resolve the ingest grant gap** (above) — otherwise the first real ingest fails
-- [ ] `RECS_SERVICE_URL` set, so `verify_internal_token` is not a no-op
-- [ ] Cloud Run invoker IAM restricted to the Functions service account
-- [ ] Caller email allowlist populated
-- [ ] `recs_service` created; migrations re-run so `000020` has a grantee
+- [x] Catalog ingest grant added without granting private product tables
+- [x] Terraform sets `RECS_SERVICE_URL` and the caller allowlist
+- [x] Terraform restricts Cloud Run invocation to Functions and deployment identities
+- [ ] `recs_service` exists before story-data applies migrations 20 through 23
 - [ ] Decide `user_id` pseudonymisation — one-way door
-- [ ] Daily per-user explanation cap and a Gemini budget alert
+- [x] Durable per-user and platform-wide daily LLM ceilings configured
+- [ ] Configure a Google Cloud billing alert for the shared Gemini project
 - [ ] Confirm `core_premise` and explanation text are escaped in the UI
 
 Related: [jobs.md](jobs.md) for what each job is permitted to touch,

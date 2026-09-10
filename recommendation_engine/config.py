@@ -67,6 +67,25 @@ class RecSettings(BaseSettings):
     max_requests_per_minute_per_user: int = 30
     max_llm_requests_per_minute_per_user: int = 6
 
+    # ── Daily LLM budgets (durable; see usage.py) ────────────────────────
+    # The buckets above are per-process, so they bound bursts but not spend: the
+    # real ceiling is `instances x limit`, and it resets on every deploy. These
+    # are counted in Postgres, shared across instances, and reset at UTC
+    # midnight. 0 = unlimited, and costs no round trip.
+    recs_max_searches_per_day_per_user: int = 10
+    recs_max_explanations_per_day_per_user: int = 30
+
+    # Platform-wide daily ceilings, across every user. Per-user budgets multiply
+    # by the user count, so on their own they bound nothing in total; these are
+    # the analogue of creditProxy's PLATFORM_DAILY_REQUEST_LIMIT, which cannot
+    # cover these routes because recs calls Gemini directly. Sized from the
+    # per-user budgets: 1000 searches is ~100 readers spending a full allowance
+    # in a day. Counted per kind, so a search flood cannot close explanations —
+    # the bound on total daily LLM requests is the sum, not either one. 0 =
+    # unlimited, which is what the platform-wide guarantee costs to give up.
+    recs_max_searches_per_day_platform: int = 1000
+    recs_max_explanations_per_day_platform: int = 1000
+
     # ── LLM / embeddings (direct Gemini; creditProxy is not in this path) ──
     google_ai_studio_api_key: str = ""
     recs_gemini_model: str = "gemini-2.5-flash-lite"
@@ -102,6 +121,24 @@ class RecSettings(BaseSettings):
             return max(0, int(v))  # type: ignore[arg-type]
         except (TypeError, ValueError):
             return 0
+
+    @field_validator(
+        "recs_max_searches_per_day_per_user",
+        "recs_max_explanations_per_day_per_user",
+        "recs_max_searches_per_day_platform",
+        "recs_max_explanations_per_day_platform",
+        mode="before",
+    )
+    @classmethod
+    def clamp_daily(cls, v: object) -> int:
+        """Clamp to >= 0. Unlike the per-minute buckets, 0 means *unlimited*
+        here — a daily budget is opt-out, and an unparseable value must not
+        silently switch it off, so a bad value falls back to the field default
+        rather than to 0."""
+        try:
+            return max(0, int(v))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            raise ValueError("daily budget must be an integer >= 0")
 
     @field_validator("recs_hnsw_ef_search", mode="before")
     @classmethod

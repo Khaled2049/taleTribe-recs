@@ -241,7 +241,7 @@ by `schema_present` in `/health`, which is why that check exists. See
 
 ## Tests
 
-16 files plus `conftest.py`: **431 tests** — 360 unit, 71 integration. Full detail,
+17 files plus `conftest.py`: **455 tests** — 376 unit, 79 integration. Full detail,
 including how to run them and what is *not* covered, is in
 [testing.md](testing.md). Summary:
 
@@ -295,4 +295,4 @@ Still genuinely unwritten:
 | `eval/genre_holdout.py` | the cheapest honest offline proxy |
 | `eval/llm_judge.py` | LLM-as-judge with a Cohen's κ ≥ 0.4 gate |
 | `eval/leave_one_out.py` | with a `--min-users 200` hard gate |
-| `Dockerfile`, `.dockerignore`, `terraform/`, `.github/workflows/` | deployment — none exist |
+| `Dockerfile`, `.dockerignore`, `recommendation_engine/terraform/`, `.github/workflows/` | production container, infrastructure, CI, and deployment |

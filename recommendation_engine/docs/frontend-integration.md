@@ -220,6 +220,10 @@ and 90s.
 `RECOMMENDATION_SERVICE_URL` and `RECS_SERVICE_URL` must be the same string in
 production, or every request is a 401.
 
+The frontend deployment workflow reads the private recs service URL from its
+Terraform data source and writes it only to `functions/.env`. It is not a Vite
+variable and is never exposed to the browser bundle.
+
 ---
 
 ## Known gap: SSE streaming is unreachable
