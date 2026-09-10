@@ -5,13 +5,17 @@ so the two cannot rank differently.
 
 Two rate buckets, for a reason. Ranking is one database round trip and can be
 generous. HyDE and explanations spend Gemini tokens on a path that deliberately
-bypasses creditProxy, so they get a much tighter bucket — together with the
-explanation cache, that is the *only* thing standing between a loop and a bill.
+bypasses creditProxy, so they get a much tighter bucket.
+
+The buckets are per-process, so they bound bursts but not spend. The daily
+budgets in `usage.py` are the durable half: counted in Postgres, shared across
+instances, reset at UTC midnight. Together with the explanation cache, those
+three are the *only* thing standing between a loop and a bill.
 """
 
 import logging
 import time
-from typing import List, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -19,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from recommendation_engine import explain as explain_mod
 from recommendation_engine import hyde as hyde_mod
+from recommendation_engine import usage
 from recommendation_engine.app_state import recommendation_state
 from recommendation_engine.pipeline import rank
 from recommendation_engine.retrieval import RetrievalFilters
@@ -59,19 +64,17 @@ class _Cached:
 
 
 class FilterSpec(BaseModel):
-    genres: Optional[List[str]] = None
-    themes: Optional[List[str]] = None
-    sources: Optional[List[str]] = None
+    genres: Optional[list[str]] = None
+    themes: Optional[list[str]] = None
     max_word_count: Optional[int] = None
     min_word_count: Optional[int] = None
     author: Optional[str] = None
     published_after: Optional[int] = None
 
-    def to_filters(self, exclude_ids: List[int]) -> RetrievalFilters:
+    def to_filters(self, exclude_ids: list[int]) -> RetrievalFilters:
         return RetrievalFilters(
             genres=self.genres,
             themes=self.themes,
-            sources=self.sources,
             max_word_count=self.max_word_count,
             min_word_count=self.min_word_count,
             author=self.author,
@@ -96,7 +99,7 @@ class AdhocRequest(BaseModel):
     prompt: Optional[str] = Field(default=None, max_length=2000)
     # Repeatable seeds are retrieved independently and fused by rank — never by
     # averaging their vectors, which would point at a region resembling neither.
-    books: List[SeedBook] = Field(default_factory=list)
+    books: list[SeedBook] = Field(default_factory=list)
     top_k: int = Field(default=10, ge=1, le=50)
     filters: Optional[FilterSpec] = None
     use_hyde: Optional[bool] = None  # None = follow the server default
@@ -104,9 +107,20 @@ class AdhocRequest(BaseModel):
 
 class ExplainRequest(BaseModel):
     user_id: str = Field(min_length=1, max_length=128)
-    item_ids: List[int] = Field(min_length=1, max_length=25)
+    item_ids: list[int] = Field(min_length=1, max_length=25)
     prompt: Optional[str] = Field(default=None, max_length=2000)
-    seed_item_ids: List[int] = Field(default_factory=list)
+    seed_item_ids: list[int] = Field(default_factory=list)
+
+
+def _api_error(
+    status: int, code: str, message: str, details: Optional[dict] = None
+) -> HTTPException:
+    """The `{code, message, details}` detail server.py renders as the stable
+    error envelope."""
+    return HTTPException(
+        status_code=status,
+        detail={"code": code, "message": message, "details": details},
+    )
 
 
 def build_router(verify_internal_token) -> APIRouter:
@@ -117,35 +131,69 @@ def build_router(verify_internal_token) -> APIRouter:
 
     # ── Helpers ──────────────────────────────────────────────────────────
 
-    async def _check_rate(request: Request, user_id: str, llm: bool = False) -> None:
+    async def _check_rate(
+        request: Request, user_id: str, llm_kind: Optional[str] = None
+    ) -> None:
+        """Admit a request, charging the token-spending ones against both guards.
+
+        `llm_kind` names the budget a token-spending route draws on, and is None
+        for a route that never reaches the LLM. With no LLM configured nothing
+        is generated, so nothing is charged — decided here, once, rather than
+        restated at every call site.
+
+        Order matters: burst first, then the day. A request the bucket is about
+        to reject should not consume a day's allowance on its way out.
+        """
         state = recommendation_state(request)
         if not await state.rate_limiter.allow(user_id):
-            raise HTTPException(
-                status_code=429,
-                detail={
-                    "code": "RATE_LIMITED",
-                    "message": "Too many requests; slow down.",
-                    "details": None,
-                },
-            )
-        if llm and not await state.llm_rate_limiter.allow(user_id):
-            raise HTTPException(
-                status_code=429,
-                detail={
-                    "code": "LLM_RATE_LIMITED",
-                    "message": (
-                        "Too many generation requests; these are not credit-metered "
-                        "and are rate limited separately."
-                    ),
-                    "details": None,
-                },
+            raise _api_error(429, "RATE_LIMITED", "Too many requests; slow down.")
+        if llm_kind is None or state.llm is None:
+            return
+
+        if not await state.llm_rate_limiter.allow(user_id):
+            raise _api_error(
+                429,
+                "LLM_RATE_LIMITED",
+                "Too many generation requests; these are not credit-metered "
+                "and are rate limited separately.",
             )
 
-    async def _load_targets(request: Request, item_ids: List[int]) -> list:
+        try:
+            await state.llm_meter.charge(user_id, llm_kind)
+        except usage.DailyBudgetExceeded as exc:
+            raise _api_error(
+                429,
+                "LLM_DAILY_LIMIT",
+                f"Daily limit of {exc.limit} reached. It resets at midnight UTC.",
+                {"kind": exc.kind, "limit": exc.limit},
+            ) from exc
+        except usage.PlatformBudgetExceeded as exc:
+            # Deliberately not phrased as the caller's fault: they have budget
+            # left, and the honest thing to tell them is that the feature is
+            # closed for the day rather than that they asked for too much.
+            raise _api_error(
+                429,
+                "LLM_PLATFORM_DAILY_LIMIT",
+                "Story discovery has reached its limit for today across "
+                "the platform. It resets at midnight UTC.",
+                {"kind": exc.kind, "limit": exc.limit},
+            ) from exc
+        except usage.MeterUnavailable as exc:
+            # Fail closed, unlike the in-memory bucket above. This path spends
+            # real money outside creditProxy; a charge that cannot be recorded
+            # must not be authorized. Ranking is unaffected and still serves.
+            raise _api_error(
+                503,
+                "LLM_METER_UNAVAILABLE",
+                "Generation is unavailable because usage cannot be recorded "
+                "right now.",
+            ) from exc
+
+    async def _load_targets(request: Request, item_ids: list[int]) -> list:
         """Fetch the fields an explanation needs, by id."""
         state = recommendation_state(request)
         rows = await state.db.read_pool.fetch(
-            "SELECT id, source::text AS source, source_id, title, author, genres, "
+            "SELECT id, story_id, title, author, genres, "
             "themes, tone, core_premise, embed_input_sha "
             "FROM recommendations.items WHERE id = ANY($1::bigint[])",
             item_ids,
@@ -160,8 +208,7 @@ def build_router(verify_internal_token) -> APIRouter:
             targets.append(
                 explain_mod.ExplanationTarget(
                     item_id=row["id"],
-                    source=row["source"],
-                    source_id=row["source_id"],
+                    story_id=str(row["story_id"]),
                     title=row["title"],
                     author=row["author"],
                     genres=list(row["genres"] or []),
@@ -182,9 +229,10 @@ def build_router(verify_internal_token) -> APIRouter:
         Uses the **precomputed** `user_taste` vector, so there is no embedding call
         on this path at all — which is what makes it the fast one.
 
-        Until the Firestore signals export exists nothing populates `user_taste`,
-        so every reader currently falls through to popularity. That is reported
-        honestly in `mode` rather than dressed up as personalization.
+        `user_taste` is built by the nightly refresh from the signals story-data
+        derives. A reader with fewer than three signals falls through to
+        popularity, and that is reported honestly in `mode` rather than dressed
+        up as personalization.
         """
         await _check_rate(request, payload.user_id)
         state = recommendation_state(request)
@@ -196,8 +244,8 @@ def build_router(verify_internal_token) -> APIRouter:
             payload.user_id,
         )
 
-        query_vectors: List[List[float]] = []
-        exclude: List[int] = []
+        query_vectors: list[list[float]] = []
+        exclude: list[int] = []
         mode = "popular"
 
         if row is not None and row["n_signals"] >= 3:
@@ -240,13 +288,8 @@ def build_router(verify_internal_token) -> APIRouter:
         HyDE when enabled.
         """
         if not payload.prompt and not payload.books:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "code": "INVALID_REQUEST",
-                    "message": "provide `prompt`, `books`, or both",
-                    "details": None,
-                },
+            raise _api_error(
+                400, "INVALID_REQUEST", "provide `prompt`, `books`, or both"
             )
 
         state = recommendation_state(request)
@@ -254,16 +297,21 @@ def build_router(verify_internal_token) -> APIRouter:
         wants_hyde = (
             settings.recs_enable_hyde if payload.use_hyde is None else payload.use_hyde
         )
-        # Only the HyDE path spends tokens, so only it draws on the tighter bucket.
+        # Only the HyDE path spends tokens, so only it draws on the tighter bucket
+        # and the daily search budget. One value decides both whether to charge
+        # and whether to generate, so the two cannot disagree.
+        hyde_client = state.llm if payload.prompt and wants_hyde else None
         await _check_rate(
-            request, payload.user_id, llm=bool(payload.prompt and wants_hyde)
+            request,
+            payload.user_id,
+            llm_kind=usage.SEARCH if hyde_client is not None else None,
         )
         config, stats = await cached.get(state.db, state.retriever)
 
-        query_vectors: List[List[float]] = []
-        exclude: List[int] = []
-        resolved: List[dict] = []
-        unresolved: List[str] = []
+        query_vectors: list[list[float]] = []
+        exclude: list[int] = []
+        resolved: list[dict] = []
+        unresolved: list[str] = []
 
         for book in payload.books:
             matches = await state.retriever.resolve_titles(
@@ -284,18 +332,13 @@ def build_router(verify_internal_token) -> APIRouter:
         if payload.prompt:
             embedder = state.query_embedder
             if not embedder.available:
-                raise HTTPException(
-                    status_code=503,
-                    detail={
-                        "code": "EMBEDDER_UNAVAILABLE",
-                        "message": "no embedding provider configured",
-                        "details": None,
-                    },
+                raise _api_error(
+                    503, "EMBEDDER_UNAVAILABLE", "no embedding provider configured"
                 )
             text = payload.prompt
-            if wants_hyde and state.llm is not None:
+            if hyde_client is not None:
                 result = await hyde_mod.generate(
-                    state.llm,
+                    hyde_client,
                     payload.prompt,
                     max_output_tokens=settings.recs_hyde_max_output_tokens,
                 )
@@ -332,8 +375,7 @@ def build_router(verify_internal_token) -> APIRouter:
         for item in data["items"]:
             item["explanation_cache_key"] = explain_mod.cache_key(
                 state.llm.model if state.llm else "none",
-                item["source"],
-                item["source_id"],
+                item["story_id"],
                 next(
                     (
                         i.embed_input_sha or ""
@@ -367,8 +409,8 @@ def build_router(verify_internal_token) -> APIRouter:
         The mode that works through a Firebase Functions proxy, which buffers
         responses and so cannot stream.
         """
-        await _check_rate(request, payload.user_id, llm=True)
         state = recommendation_state(request)
+        await _check_rate(request, payload.user_id, llm_kind=usage.EXPLAIN)
 
         targets = await _load_targets(request, payload.item_ids)
         if not targets:
@@ -413,26 +455,14 @@ def build_router(verify_internal_token) -> APIRouter:
                 int(part) for part in (seed_item_ids or "").split(",") if part.strip()
             ]
         except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "code": "INVALID_REQUEST",
-                    "message": "item_ids must be comma-separated integers",
-                    "details": None,
-                },
+            raise _api_error(
+                400, "INVALID_REQUEST", "item_ids must be comma-separated integers"
             )
         if not ids:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "code": "INVALID_REQUEST",
-                    "message": "item_ids is required",
-                    "details": None,
-                },
-            )
+            raise _api_error(400, "INVALID_REQUEST", "item_ids is required")
 
-        await _check_rate(request, user_id, llm=True)
         state = recommendation_state(request)
+        await _check_rate(request, user_id, llm_kind=usage.EXPLAIN)
         targets = await _load_targets(request, ids)
         fingerprint = explain_mod.query_fingerprint(query=prompt, seed_item_ids=seeds)
         context = explain_mod.describe_context(prompt, None)

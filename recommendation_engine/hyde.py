@@ -18,7 +18,7 @@ land in a different region of the space and defeat the purpose.
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import List, Optional, cast
+from typing import Optional, cast
 
 from recommendation_engine.ingest.vocabularies import prompt_vocabulary_block
 from recommendation_engine.llm import GeminiClient, LLMError
@@ -54,8 +54,8 @@ class HydeResult:
     embed_text: str
     title: str
     core_premise: str
-    themes: List[str]
-    tone: List[str]
+    themes: list[str]
+    tone: list[str]
 
     def as_dict(self) -> dict[str, object]:
         return {

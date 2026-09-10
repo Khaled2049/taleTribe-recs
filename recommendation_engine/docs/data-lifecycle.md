@@ -15,35 +15,36 @@ SIGNALS      synthetic / Firestore ──→ InteractionRecord ──→ load �
 
 ### The five stages
 
-Every book — CMU corpus or TaleTribe story — goes through the same five stages. Only
-stage 1 differs by source.
+Every story goes through the same four stages.
 
 ```
-1. PARSE       source-specific → title, author, raw genres, summary text
+1. READ        published stories from story-data → title, author, description, tags
 2. NORMALIZE   LLM → core_premise, themes, tone, confidence
-3. CROSSWALK   raw genre labels → platform categories
-4. COMPOSE     the fields → one block of text → sha256
-5. EMBED       that text → 768 numbers, tagged RETRIEVAL_DOCUMENT
+3. COMPOSE     the fields → one block of text → sha256
+4. EMBED       that text → 768 numbers, tagged RETRIEVAL_DOCUMENT
 ```
 
-### Stage 1 — Parse
+There used to be a fifth stage, CROSSWALK, mapping the CMU corpus's free-text
+genre labels onto platform categories. Stories already carry a `category` and
+`tags` from a controlled list, so it has no work to do.
 
-**CMU corpus** (`ingest/cmu_parse.py`). A 42 MB TSV, 16,559 rows, streamed line by line.
-Four filters, each applied here rather than downstream because each one costs money if
-it slips through to stage 2:
+### Stage 1 — Read
 
-| Filter | Count | Why |
-|---|---|---|
-| Drop summaries under 50 words | 1,042 | Nothing to derive a premise from. An LLM asked anyway invents one. |
-| Truncate to 1,200 words | 1,039 | Plot summaries front-load the premise; the tail is expensive and adds little. |
-| Collapse `(title, author)` duplicates | 5 | Keeps the longest summary. |
-| Guard the genre field | 3,718 | It's an empty **string**, not `{}`, when a book has no genres — the one input a naive `json.loads` dies on. |
+`ingest/platform.py`. Reads `stories WHERE is_published` straight out of
+story-data's database (same database, no HTTP), using `description +
+chapter_summaries + tags` as the text and summing chapter `word_count` for
+length. `chapter_summaries` is the better input and is used when the summarize
+path has populated it; the description is the fallback.
 
-Result: **15,512 usable records** from 16,559 lines, in ~1.2 seconds.
+Chapter and tag aggregates are **scalar subqueries, not joins**. Joining
+`story_tags` and `chapters` in one query multiplies their rows together, which
+leaves `sum(word_count)` inflated by the number of tags — `count(DISTINCT …)`
+hides that for the counts and not at all for the sum.
 
-**Platform stories** (not yet written — Phase 3). Reads `stories` where
-`isPublished == true` via the Admin SDK, using `title + description + tags + category`
-as the text, and summing chapter `wordCount` for length. Same stages 2–5 afterwards.
+The short-description problem is real and inherited: many stories carry a
+one-sentence description, which is exactly what the `confidence < 0.5` gate in
+stage 2 is designed to catch. Expect a meaningful share of the catalog to come
+back ineligible rather than confidently wrong.
 
 ### Stage 2 — Normalize (the expensive one)
 
@@ -149,8 +150,8 @@ resumability mechanism for the whole pipeline.
 Stored with full provenance: `embedding`, `embed_model` (`google:gemini-embedding-001`),
 `embed_task_type`, `embed_input`, `embed_input_sha`, `embedded_at`.
 
-The HNSW index is **rebuilt after** a bulk load (`--rebuild-index`) rather than
-maintained across 15k inserts — far faster, and it produces a better-balanced graph.
+The HNSW index belongs to story-data (migration 000019) and is maintained as rows
+are upserted; the ingest never rebuilds it.
 
 ---
 
@@ -164,8 +165,8 @@ This is the question with the most surprising answer, so here it is precisely.
 the stored vector came from a different embedder.**
 
 ```sql
--- the backfill's skip check
-WHERE source = $1 AND source_id = ANY($2)
+-- the ingest's skip check
+WHERE story_id = ANY($1)
   AND embedding IS NOT NULL
   AND embed_model = $3          -- current model
   AND embed_task_type = $4      -- RETRIEVAL_DOCUMENT
@@ -187,7 +188,7 @@ Say a TaleTribe author publishes *"The Glass Orchard"*.
 5. Compose                   → text block → sha256 = "a3f9..."
 6. Skip check                no row for (platform, {id}) → not skipped
 7. Embed                     1 call, RETRIEVAL_DOCUMENT
-8. Upsert                    INSERT ... ON CONFLICT (source, source_id) DO UPDATE
+8. Upsert                    INSERT ... ON CONFLICT (story_id) DO UPDATE
 ```
 
 Cost: **one LLM call + one embedding call**, roughly $0.0003. It is immediately
@@ -262,16 +263,16 @@ record is built and tested.
 One JSON object per line:
 
 ```json
-{"user_id": "synth_00042", "source": "cmu", "source_id": "620",
+{"user_id": "synth_00042", "story_id": "6f1c…",
  "kind": "rating", "value": 4.0, "occurred_at": "2026-07-14T09:31:00Z"}
-{"user_id": "synth_00042", "source": "cmu", "source_id": "843",
+{"user_id": "synth_00042", "story_id": "9ab3…",
  "kind": "progress", "value": 0.95, "chapter_index": 11, "total_chapters": 12,
  "occurred_at": "2026-07-15T20:02:00Z"}
 ```
 
 Four decisions, each load-bearing:
 
-**`source` + `source_id`, never the internal `id`.** `items.id` is a surrogate key the
+**`story_id`, never the internal `id`.** `items.id` is a surrogate key the
 database assigns. No external generator or Firestore export can know it. The pair is the
 stable external identity; the loader resolves it. Records naming an unknown book are
 counted and skipped, not fatal — a Firestore export can legitimately reference a story
@@ -298,7 +299,7 @@ rewind a reader either.
 ```
 read records
   → validate kind
-  → resolve (source, source_id) → items.id
+  → resolve story_id → items.id
   → compute engagement weight   like 1.0 · rating≥4 1.0 · rating 3 0.4
                                 completion 0.8 · progress 0.4×scroll · rating≤2 0.0
   → derive completion from progress → writes a SECOND row
@@ -385,7 +386,7 @@ LLM-authored ones.
 
 ### Why it's generated in code, not by a language model
 
-- It must reference `source_id`s in *this* catalog.
+- It must reference `story_id`s in *this* catalog.
 - It needs statistical structure a model won't hold coherently over thousands of records
   — the power law, per-reader affinity, and the co-occurrence that emerges from readers
   sharing affinities.
@@ -415,22 +416,38 @@ enter a real measurement.
 
 ```bash
 python -m recommendation_engine.sync.seed --readers 250 --cooccurrence
-python -m recommendation_engine.sync.seed --readers 5 --out /tmp/s.jsonl --dry-run
+python -m recommendation_engine.sync.seed --readers 5 --dry-run
 python -m recommendation_engine.sync.seed --purge
 ```
 
-### The migration to real data
+### The migration to real data — done, and it landed elsewhere
 
-When Firestore is connected:
+This section used to describe writing a `sync/firestore.py` that read likes, ratings
+and reading progress with the Admin SDK and emitted `InteractionRecord`s into the
+same loader. **That is not how it went**, and the reason is the interesting part.
 
-1. Write `sync/firestore.py` — read likes, ratings and readingProgress via the Admin
-   SDK, emit `InteractionRecord`s. (`users/{uid}/readingProgress` is strictly private;
-   `firestore.rules` warns that `allow read` grants `list`, so this **must** be
-   server-side via the Admin SDK.)
-2. Run `--purge` to remove synthetic readers.
-3. Point the same loader at the new source. Nothing downstream changes.
+The private-data problem that made a server-side reader mandatory under Firestore did
+not disappear when the platform moved to Postgres — it got sharper, because recs now
+*shares a database* with the data it must not read. So the derivation moved across
+the service boundary entirely:
 
-The only genuinely new thing needed for CF to become useful is a **`readerEvents`**
-append-only collection (impression / open / chapter-complete / dismiss). Without it,
-co-occurrence stays too sparse, and CTR and completion-rate can never be measured at
-all.
+| Planned | Actual |
+|---|---|
+| `sync/firestore.py` in this repo | `internal/store/recommendations.go` in **story-data** |
+| Admin SDK reads → `InteractionRecord` → loader | One SQL statement, in-database |
+| Convention keeps recs out of private data | **A role grant** does (`migrations/000020`) |
+
+The steps now:
+
+1. Run `story-data sync-recs` — it derives `recommendations.interactions` directly.
+2. Run `seed.py --refresh-only` to recompute the aggregates.
+3. Run `--purge` when you no longer want synthetic readers mixed in. Not urgent:
+   they are `synth_`-prefixed and story-data's sync excludes that prefix, so real
+   and synthetic readers coexist without interfering.
+
+See [jobs.md](jobs.md) and [security-and-roles.md](security-and-roles.md).
+
+The only genuinely new thing needed for **CF** to become useful is still missing: an
+append-only reader event log (impression / open / chapter-complete / dismiss).
+Without it, co-occurrence stays too sparse to beat the popularity prior — which is
+why `w_cf_ceiling` is 0 — and CTR and completion-rate can never be measured at all.

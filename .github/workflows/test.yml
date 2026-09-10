@@ -1,0 +1,89 @@
+name: Tests
+
+# Called by pr-check.yml and deploy.yml, so the suite a PR passes is the suite a
+# deploy runs, rather than two copies that drift apart.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Full test suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      RECS_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      USE_MOCK: "true"
+
+    steps:
+      - name: Checkout recommendations
+        uses: actions/checkout@v4
+
+      # story-data owns the schema, and its main branch is the migration set
+      # production runs.
+      - name: Checkout story-data migrations
+        uses: actions/checkout@v4
+        with:
+          repository: Khaled2049/story-data
+          path: _story-data
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: _story-data/go.mod
+          cache-dependency-path: _story-data/go.sum
+
+      - name: Apply story-data schema
+        working-directory: _story-data
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres?sslmode=disable
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE ROLE recs_service NOLOGIN'
+          go run ./cmd/api migrate
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: 2.1.3
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Cache Poetry virtualenv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ github.repository }}-py3.11-${{ hashFiles('poetry.lock') }}
+
+      - name: Install dependencies
+        run: poetry install --with dev
+
+      - name: Check formatting
+        run: |
+          poetry run black --check .
+          poetry run isort --check-only .
+          poetry run ruff check --select E7,E9,F .
+
+      - name: Run full test suite
+        run: poetry run python -m pytest tests/ -q

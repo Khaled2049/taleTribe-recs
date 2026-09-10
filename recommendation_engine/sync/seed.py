@@ -1,13 +1,10 @@
-"""Generate and load synthetic reader behaviour.
+"""Generate synthetic reader behaviour, and refresh what scoring reads.
 
     # generate readers, load them, and refresh everything scoring reads
     python -m recommendation_engine.sync.seed --readers 200
 
-    # write the canonical JSONL without touching the database, to inspect it
-    python -m recommendation_engine.sync.seed --readers 20 --out /tmp/seed.jsonl --dry-run
-
-    # load a file produced elsewhere (this is the Firestore export's future entry point)
-    python -m recommendation_engine.sync.seed --load /tmp/seed.jsonl
+    # generate and inspect without touching the database
+    python -m recommendation_engine.sync.seed --readers 20 --dry-run
 
     # remove every synthetic reader
     python -m recommendation_engine.sync.seed --purge
@@ -15,8 +12,12 @@
     # recompute aggregates without changing interactions
     python -m recommendation_engine.sync.seed --refresh-only
 
-`--load` is the important flag: it is source-agnostic. When the Firestore export
-lands it emits the same JSONL and uses the same path, so nothing downstream changes.
+**Real reader signals do not arrive here.** story-data derives them directly
+(`story-data sync-recs`); the JSONL import/export this script used to offer was
+the contract between the two services and is gone. `--refresh-only` is the flag
+that matters now: run it after a story-data sync to recompute `item_stats`,
+`user_taste` and, optionally, the co-occurrence matrix over whatever signals are
+in the table — synthetic, real, or both.
 """
 
 import argparse
@@ -24,8 +25,7 @@ import asyncio
 import json
 import logging
 import sys
-from pathlib import Path
-from typing import List, Optional, cast
+from typing import Optional, cast
 
 from recommendation_engine.config import RecSettings
 from recommendation_engine.db import Database
@@ -44,8 +44,6 @@ class _SeedArgs(argparse.Namespace):
     seed: int
     days: int
     catalog_limit: int | None
-    out: str | None
-    load: str | None
     purge: bool
     refresh_only: bool
     cooccurrence: bool
@@ -54,7 +52,9 @@ class _SeedArgs(argparse.Namespace):
 
 async def run(args: _SeedArgs) -> dict:
     settings = RecSettings()
-    db = Database(write_dsn=settings.write_dsn, read_dsn=settings.read_dsn)
+    # Both pools on the primary: a refresh reads what it just wrote, which a
+    # read replica may not have yet.
+    db = Database(write_dsn=settings.write_dsn, read_dsn=settings.write_dsn)
     await db.connect()
     report: dict = {}
     try:
@@ -65,22 +65,12 @@ async def run(args: _SeedArgs) -> dict:
             report["purged_rows"] = removed
             logger.info("purged %d synthetic interaction rows", removed)
 
-        records: Optional[List[inter.InteractionRecord]] = None
+        records: Optional[list[inter.InteractionRecord]] = None
 
-        if args.load:
-            path = Path(args.load)
-            if not path.exists():
-                raise FileNotFoundError(path)
-            records = list(inter.read_jsonl(path))
-            logger.info("read %d records from %s", len(records), path)
-
-        elif not args.refresh_only and not args.purge:
+        if not args.refresh_only and not args.purge:
             catalog = await synthetic.load_catalog(pool, limit=args.catalog_limit)
             if not catalog:
-                raise RuntimeError(
-                    "catalog is empty — run the backfill first:\n"
-                    "  python -m recommendation_engine.ingest.backfill --limit 2000"
-                )
+                raise RuntimeError("catalog is empty — ingest published stories first")
             logger.info("catalog: %d eligible items", len(catalog))
             records = list(
                 synthetic.generate(
@@ -95,14 +85,18 @@ async def run(args: _SeedArgs) -> dict:
                 "generated %d records for %d readers", len(records), args.readers
             )
 
-            if args.out:
-                written = inter.write_jsonl(Path(args.out), records)
-                logger.info("wrote %d records to %s", written, args.out)
-
         if args.dry_run:
             report["dry_run"] = True
             if records:
-                report["sample"] = [json.loads(r.to_json()) for r in records[:3]]
+                report["sample"] = [
+                    {
+                        "user_id": r.user_id,
+                        "story_id": r.story_id,
+                        "kind": r.kind,
+                        "value": r.value,
+                    }
+                    for r in records[:3]
+                ]
             return report
 
         if records:
@@ -148,7 +142,7 @@ async def run(args: _SeedArgs) -> dict:
         await db.aclose()
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Generate/load reader behaviour and refresh derived tables."
     )
@@ -161,10 +155,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     parser.add_argument(
         "--catalog-limit", type=int, help="Only let readers see the first N items"
-    )
-    parser.add_argument("--out", help="Also write the generated JSONL here")
-    parser.add_argument(
-        "--load", help="Load records from a JSONL file instead of generating"
     )
     parser.add_argument(
         "--purge", action="store_true", help="Delete all synth_* readers first"

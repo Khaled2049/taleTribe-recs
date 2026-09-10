@@ -19,7 +19,8 @@ hundred microseconds in numpy.
 """
 
 import math
-from typing import Iterable, List, Optional, Sequence, cast
+from collections.abc import Iterable, Sequence
+from typing import Optional, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -45,7 +46,7 @@ def mmr_select(
     scores: Sequence[float],
     k: int,
     lambda_: float = DEFAULT_LAMBDA,
-) -> List[int]:
+) -> list[int]:
     """Select up to `k` indices by MMR, best first.
 
     Returns indices into the input sequences so the caller can keep whatever row
@@ -67,7 +68,7 @@ def mmr_select(
     matrix = _normalize_rows(cast(FloatArray, np.asarray(embeddings, dtype=np.float64)))
     similarity = cast(FloatArray, matrix @ matrix.T)
 
-    selected: List[int] = [int(np.argmax(relevance))]
+    selected: list[int] = [int(np.argmax(relevance))]
     # Running max similarity to the selected set, updated incrementally: an O(n)
     # update per pick instead of rescanning the selected set each time.
     first_similarity_row = cast(FloatArray, similarity[selected[0]])
@@ -92,7 +93,7 @@ def diversify(
     lambda_: float = DEFAULT_LAMBDA,
     embedding_field: str = "embedding",
     score_field: str = "score",
-) -> List[dict]:
+) -> list[dict]:
     """Reorder and trim scored records by MMR.
 
     Records missing an embedding are given a zero vector, which makes them

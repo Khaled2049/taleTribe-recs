@@ -7,11 +7,7 @@ noticing that a live query returned the identical score sequence to a mock-
 embedded one.
 """
 
-import os
-
 import pytest
-
-os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "test-project")
 
 from recommendation_engine.fusion import DEFAULT_RRF_K  # noqa: E402
 from recommendation_engine.pipeline import rank  # noqa: E402
@@ -23,13 +19,12 @@ pytestmark = pytest.mark.unit
 DIM = 8
 
 
-def _row(item_id, sem_cos, source="cmu", n_interactions=0, pop=0.0):
+def _row(item_id, sem_cos, n_interactions=0, pop=0.0):
     vector = [0.0] * DIM
     vector[item_id % DIM] = 1.0
     return {
         "id": item_id,
-        "source": source,
-        "source_id": f"s{item_id}",
+        "story_id": f"00000000-0000-0000-0000-{item_id:012d}",
         "title": f"Book {item_id}",
         "author": None,
         "genres": [],
@@ -62,7 +57,7 @@ class _FakeRetriever:
 
 
 CONFIG = ScoringConfig()
-STATS = CatalogStats(platform_item_count=0)
+STATS = CatalogStats()
 
 
 async def _rank(retriever, query_vectors, top_k=5, config=CONFIG):
@@ -222,19 +217,6 @@ async def test_cf_is_inert_while_stubbed():
 
     assert result.items[0].breakdown["collaborative"] == 0.0
     assert result.items[0].breakdown["weights"]["collaborative"] == 0.0
-
-
-async def test_off_platform_flag_marks_seed_corpus_items():
-    """CMU books are not readable on TaleTribe, so the UI has to badge them."""
-    retriever = _FakeRetriever(
-        [[_row(1, 0.5, source="cmu"), _row(2, 0.5, source="platform")]]
-    )
-
-    result = await _rank(retriever, [[1.0] + [0.0] * (DIM - 1)])
-
-    by_id = {item.id: item for item in result.items}
-    assert by_id[1].off_platform is True
-    assert by_id[2].off_platform is False
 
 
 async def test_diversity_is_reported():

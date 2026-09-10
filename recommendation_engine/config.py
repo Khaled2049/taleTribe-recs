@@ -6,9 +6,7 @@ hard-fails, and derived `@property`s instead of extra fields. Instantiated once
 inside `create_app()` so tests can monkeypatch env vars before creation.
 
 No env prefix, matching the root Settings — field names map directly to
-SCREAMING_SNAKE env vars (`recs_database_url` → `RECS_DATABASE_URL`), which
-keeps shared vars like `GOOGLE_CLOUD_PROJECT` spelled the way the Firestore
-Admin SDK and the rest of the repo already expect.
+SCREAMING_SNAKE env vars (`recs_database_url` → `RECS_DATABASE_URL`).
 """
 
 import json
@@ -20,10 +18,11 @@ from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
 
-# The docker-compose default. Deliberately a real, working local DSN so `python
-# -m recommendation_engine.server` runs with zero config — and deliberately
-# rejected by the production validator below so it can never ship.
-LOCAL_DEV_DSN = "postgresql://recs:recs@localhost:5434/recs"
+# story-data's local database, which now holds the `recommendations` schema.
+# Deliberately a real, working local DSN so `python -m recommendation_engine.server`
+# runs with zero config once that stack is up — and deliberately rejected by the
+# production validator below so it can never ship.
+LOCAL_DEV_DSN = "postgresql://postgres:postgres@localhost:5433/story_data"
 
 # Every vector we write and every HNSW index must agree on this. Sourced from
 # the shared embedding provider rather than redeclared, so there is exactly one
@@ -32,14 +31,13 @@ from embedding_provider import (  # noqa: E402
     EXPECTED_EMBEDDING_DIM,
 )
 
-SCHEMA_NAME = "recommendations"
-
 
 class RecSettings(BaseSettings):
     # ── Datastore ────────────────────────────────────────────────────────
-    # RW is used by migrations, ingest and sync; RO by request serving. In
-    # local dev they are the same DSN; in production RO points at a dedicated
-    # read-only compute so vector scans never share compute with billing.
+    # RW is used by ingest and sync; RO by request serving. In local dev they
+    # are the same DSN; in production RO points at a dedicated read-only
+    # compute so vector scans never share compute with the product API. Neither
+    # migrates: story-data owns the schema.
     recs_database_url: str = LOCAL_DEV_DSN
     recs_database_url_ro: str = ""  # falls back to recs_database_url (see property)
     recs_db_pool_min: int = 1
@@ -47,8 +45,6 @@ class RecSettings(BaseSettings):
 
     # ── Runtime environment ──────────────────────────────────────────────
     environment: str = "development"
-    google_cloud_project: str = ""  # required only for the Firestore sync path
-    firestore_emulator_host: str = ""
     port: int = 8100
 
     # ── OIDC / service-to-service auth (required in production) ──────────
@@ -64,6 +60,25 @@ class RecSettings(BaseSettings):
     # that spend LLM tokens — HyDE and explanations — which are not credit-metered.
     max_requests_per_minute_per_user: int = 30
     max_llm_requests_per_minute_per_user: int = 6
+
+    # ── Daily LLM budgets (durable; see usage.py) ────────────────────────
+    # The buckets above are per-process, so they bound bursts but not spend: the
+    # real ceiling is `instances x limit`, and it resets on every deploy. These
+    # are counted in Postgres, shared across instances, and reset at UTC
+    # midnight. 0 = unlimited, and costs no round trip.
+    recs_max_searches_per_day_per_user: int = 10
+    recs_max_explanations_per_day_per_user: int = 30
+
+    # Platform-wide daily ceilings, across every user. Per-user budgets multiply
+    # by the user count, so on their own they bound nothing in total; these are
+    # the analogue of creditProxy's PLATFORM_DAILY_REQUEST_LIMIT, which cannot
+    # cover these routes because recs calls Gemini directly. Sized from the
+    # per-user budgets: 1000 searches is ~100 readers spending a full allowance
+    # in a day. Counted per kind, so a search flood cannot close explanations —
+    # the bound on total daily LLM requests is the sum, not either one. 0 =
+    # unlimited, which is what the platform-wide guarantee costs to give up.
+    recs_max_searches_per_day_platform: int = 1000
+    recs_max_explanations_per_day_platform: int = 1000
 
     # ── LLM / embeddings (direct Gemini; creditProxy is not in this path) ──
     google_ai_studio_api_key: str = ""
@@ -100,6 +115,24 @@ class RecSettings(BaseSettings):
             return max(0, int(v))  # type: ignore[arg-type]
         except (TypeError, ValueError):
             return 0
+
+    @field_validator(
+        "recs_max_searches_per_day_per_user",
+        "recs_max_explanations_per_day_per_user",
+        "recs_max_searches_per_day_platform",
+        "recs_max_explanations_per_day_platform",
+        mode="before",
+    )
+    @classmethod
+    def clamp_daily(cls, v: object) -> int:
+        """Clamp to >= 0. Unlike the per-minute buckets, 0 means *unlimited*
+        here — a daily budget is opt-out, and an unparseable value must not
+        silently switch it off, so a bad value is rejected rather than read
+        as 0."""
+        try:
+            return max(0, int(v))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            raise ValueError("daily budget must be an integer >= 0")
 
     @field_validator("recs_hnsw_ef_search", mode="before")
     @classmethod
@@ -176,7 +209,7 @@ class RecSettings(BaseSettings):
             )
         if self.recs_database_url.strip() == LOCAL_DEV_DSN:
             raise ValueError(
-                "RECS_DATABASE_URL is still the local docker-compose default; set a "
+                "RECS_DATABASE_URL is still the local story-data default; set a "
                 "real DSN when ENVIRONMENT=production"
             )
         if not self.google_ai_studio_api_key.strip():
@@ -202,7 +235,7 @@ class RecSettings(BaseSettings):
     def allowed_callers(self) -> frozenset[str]:
         """Frozenset of trusted caller service account emails."""
         if self.environment != "production":
-            return frozenset()
+            return frozenset[str]()
         raw_list = self.allowed_service_accounts.strip()
         if raw_list:
             return frozenset(
@@ -211,7 +244,7 @@ class RecSettings(BaseSettings):
         single = self.firebase_functions_service_account.strip()
         if single:
             return frozenset({single})
-        return frozenset()
+        return frozenset[str]()
 
     @property
     def read_dsn(self) -> str:
@@ -221,7 +254,8 @@ class RecSettings(BaseSettings):
 
     @property
     def write_dsn(self) -> str:
-        """DSN for migrations, ingest and sync."""
+        """DSN for writes. Batch jobs read through it too, so they see their
+        own writes."""
         return self.recs_database_url.strip()
 
     @property

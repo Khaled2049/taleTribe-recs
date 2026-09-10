@@ -8,13 +8,10 @@ has no brute-force fallback, retrieval returns *nothing* with no error raised
 anywhere. So the historical request shape is pinned byte for byte.
 """
 
-import os
 from typing import Protocol, cast
 
 import pytest
 from tenacity import wait_none
-
-os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "test-project")
 
 from embedding_provider import (  # noqa: E402
     BATCH_MAX_REQUESTS,

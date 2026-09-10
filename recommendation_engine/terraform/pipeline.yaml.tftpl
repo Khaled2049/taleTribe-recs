@@ -1,0 +1,25 @@
+main:
+  steps:
+    - ingest_catalog:
+        call: googleapis.run.v2.projects.locations.jobs.run
+        args:
+          name: projects/${project_id}/locations/${region}/jobs/${ingest_job_name}
+          body: {}
+        connector_params:
+          timeout: 3600
+    - sync_reader_signals:
+        call: googleapis.run.v2.projects.locations.jobs.run
+        args:
+          name: projects/${project_id}/locations/${region}/jobs/${story_data_sync_job_name}
+          body: {}
+        connector_params:
+          timeout: 900
+    - refresh_aggregates:
+        call: googleapis.run.v2.projects.locations.jobs.run
+        args:
+          name: projects/${project_id}/locations/${region}/jobs/${refresh_job_name}
+          body: {}
+        connector_params:
+          timeout: 900
+    - complete:
+        return: "recommendation pipeline completed"

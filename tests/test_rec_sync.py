@@ -3,15 +3,10 @@
 The loader and aggregation need a database and live in test_rec_sync_integration.py.
 """
 
-import json
-import os
 import random
 from datetime import datetime, timezone
-from typing import cast
 
 import pytest
-
-os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "test-project")
 
 from recommendation_engine.sync import synthetic  # noqa: E402
 from recommendation_engine.sync.interactions import (  # noqa: E402
@@ -22,8 +17,6 @@ from recommendation_engine.sync.interactions import (  # noqa: E402
     SYNTHETIC_USER_PREFIX,
     VALID_KINDS,
     InteractionRecord,
-    read_jsonl,
-    write_jsonl,
 )
 
 pytestmark = pytest.mark.unit
@@ -32,8 +25,7 @@ pytestmark = pytest.mark.unit
 def _record(**overrides):
     base = dict(
         user_id="synth_00001",
-        source="cmu",
-        source_id="620",
+        story_id="story-620",
         kind=KIND_PROGRESS,
         occurred_at=datetime(2026, 7, 14, 9, 31, tzinfo=timezone.utc),
         value=0.5,
@@ -49,95 +41,10 @@ def _record(**overrides):
 # ══════════════════════════════════════════════════════════════════════════
 
 
-def test_record_round_trips_through_json():
-    original = _record()
-
-    restored = InteractionRecord.from_json(original.to_json())
-
-    assert restored == original
-
-
-def test_json_omits_absent_fields():
-    """A `like` has no value, chapter or total — emitting nulls would imply the
-    source knows something it does not."""
-    payload = cast(
-        dict[str, object],
-        cast(
-            object,
-            json.loads(
-                _record(
-                    kind=KIND_LIKE,
-                    value=None,
-                    chapter_index=None,
-                    total_chapters=None,
-                ).to_json()
-            ),
-        ),
-    )
-
-    assert set(payload) == {"user_id", "source", "source_id", "kind", "occurred_at"}
-
-
-def test_naive_timestamps_are_treated_as_utc():
-    """An external generator may omit the offset; a silent local-time
-    interpretation would shift every event."""
-    record = InteractionRecord.from_json(
-        json.dumps(
-            {
-                "user_id": "u",
-                "source": "cmu",
-                "source_id": "1",
-                "kind": KIND_LIKE,
-                "occurred_at": "2026-07-14T09:31:00",
-            }
-        )
-    )
-
-    assert record.occurred_at.tzinfo is not None
-    assert record.occurred_at.utcoffset().total_seconds() == 0
-
-
-def test_z_suffix_is_accepted():
-    record = InteractionRecord.from_json(
-        json.dumps(
-            {
-                "user_id": "u",
-                "source": "cmu",
-                "source_id": "1",
-                "kind": KIND_LIKE,
-                "occurred_at": "2026-07-14T09:31:00Z",
-            }
-        )
-    )
-
-    assert record.occurred_at.year == 2026
-
-
-def test_only_kinds_firestore_can_supply_are_valid():
+def test_only_kinds_the_platform_records_are_valid():
     """The format must not promise data the platform cannot produce."""
     assert VALID_KINDS == {KIND_LIKE, KIND_RATING, KIND_PROGRESS}
     assert KIND_COMPLETION not in VALID_KINDS, "completion is derived, never supplied"
-
-
-def test_jsonl_round_trip(tmp_path):
-    records = [_record(source_id=str(i)) for i in range(5)]
-    path = tmp_path / "seed.jsonl"
-
-    assert write_jsonl(path, records) == 5
-    assert list(read_jsonl(path)) == records
-
-
-def test_jsonl_skips_blank_and_malformed_lines(tmp_path):
-    """One bad line must not lose the file."""
-    path = tmp_path / "seed.jsonl"
-    path.write_text(
-        _record().to_json()
-        + "\n\n{not json}\n"
-        + _record(source_id="2").to_json()
-        + "\n"
-    )
-
-    assert len(list(read_jsonl(path))) == 2
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -179,8 +86,7 @@ def _catalog(n=60):
     themes = ["revenge", "isolation", "found family", "prophecy"]
     return [
         synthetic.CatalogItem(
-            source="cmu",
-            source_id=str(i),
+            story_id=f"story-{i}",
             genres=[genres[i % len(genres)]],
             themes=[themes[i % len(themes)]],
         )
@@ -190,15 +96,15 @@ def _catalog(n=60):
 
 def test_generation_is_reproducible():
     """Same seed, same data — otherwise eval runs are not comparable."""
-    a = [r.to_json() for r in synthetic.generate(_catalog(), readers=10, seed=7)]
-    b = [r.to_json() for r in synthetic.generate(_catalog(), readers=10, seed=7)]
+    a = list(synthetic.generate(_catalog(), readers=10, seed=7))
+    b = list(synthetic.generate(_catalog(), readers=10, seed=7))
 
     assert a == b
 
 
 def test_different_seeds_give_different_data():
-    a = [r.to_json() for r in synthetic.generate(_catalog(), readers=10, seed=1)]
-    b = [r.to_json() for r in synthetic.generate(_catalog(), readers=10, seed=2)]
+    a = list(synthetic.generate(_catalog(), readers=10, seed=1))
+    b = list(synthetic.generate(_catalog(), readers=10, seed=2))
 
     assert a != b
 
@@ -217,14 +123,14 @@ def test_only_valid_kinds_are_emitted():
 
 
 def test_records_reference_real_catalog_items():
-    """Keyed on (source, source_id) because the internal id is a surrogate the
+    """Keyed on story_id because the internal id is a surrogate the
     generator cannot know."""
     catalog = _catalog()
-    known = {(item.source, item.source_id) for item in catalog}
+    known = {item.story_id for item in catalog}
 
     records = list(synthetic.generate(catalog, readers=20, seed=4))
 
-    assert all((r.source, r.source_id) in known for r in records)
+    assert all(r.story_id in known for r in records)
 
 
 def test_ratings_are_within_range():
@@ -252,7 +158,7 @@ def test_popularity_is_a_long_tail_not_uniform():
 
     counts: dict = {}
     for record in records:
-        counts[record.source_id] = counts.get(record.source_id, 0) + 1
+        counts[record.story_id] = counts.get(record.story_id, 0) + 1
     ordered = sorted(counts.values(), reverse=True)
 
     assert len(ordered) > 20
@@ -268,7 +174,7 @@ def test_readers_have_distinguishable_tastes():
 
     by_user: dict = {}
     for record in records:
-        by_user.setdefault(record.user_id, set()).add(record.source_id)
+        by_user.setdefault(record.user_id, set()).add(record.story_id)
 
     users = [items for items in by_user.values() if len(items) >= 3]
     assert len(users) >= 10
@@ -287,7 +193,7 @@ def test_finishing_correlates_with_higher_ratings():
     completed = set()
     ratings: dict = {}
     for record in records:
-        key = (record.user_id, record.source_id)
+        key = (record.user_id, record.story_id)
         if record.is_complete:
             completed.add(key)
         if record.kind == KIND_RATING:

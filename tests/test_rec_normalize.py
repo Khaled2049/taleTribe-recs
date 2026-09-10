@@ -3,11 +3,7 @@
 No network: the LLM is a fake that returns canned payloads.
 """
 
-import os
-
 import pytest
-
-os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "test-project")
 
 from recommendation_engine.ingest.normalize_llm import (  # noqa: E402
     MAX_PREMISE_WORDS,

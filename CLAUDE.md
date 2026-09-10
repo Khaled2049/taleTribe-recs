@@ -8,35 +8,54 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 retrieval, HyDE query expansion, RRF fusion across multiple seeds, MMR
 diversification, and an LLM explanation layer ("why was this recommended").
 It was split out of `taleTribe-agents/recommendation_engine` to keep its
-Postgres/pgvector workload, migrations, and scaling profile independent from
-that Firestore-backed service — see `README.md` for why.
+Postgres/pgvector workload and scaling profile independent from that
+Firestore-backed service — see `README.md` for why. Its *database* is no
+longer separate: the `recommendations` schema now lives in story-data's
+Postgres, which story-data migrates. The service, its deploy and its scaling
+stay independent; only the schema moved.
 
-It recommends **TaleTribe stories** (owned by the `story-data` repo/service,
-`item_source = 'platform'`) plus a bootstrap corpus of CMU book summaries
-(`item_source = 'cmu'`) used for cold-start before enough platform
-interactions exist. `recommendations.items` is a **derived catalog** —
-embeddings + LLM-extracted genres/themes/tone/premise — keyed back to the
-real story by `source_id`. It is not a copy of story-data's source of truth,
-the same way `story_vector_chunks` in story-data isn't a copy of `chapters`.
+It recommends **published TaleTribe stories**, and nothing else. A CMU book
+summary corpus used to share the catalog as cold-start scaffolding; it has been
+removed, along with its parser, genre crosswalk, the `item_source` enum and the
+source down-weighting term. `recommendations.items` is a **derived catalog** —
+embeddings + LLM-extracted genres/themes/tone/premise — keyed back to the real
+story by a `story_id` foreign key. It is not a copy of story-data's source of
+truth, the same way `story_vector_chunks` in story-data isn't a copy of
+`chapters`.
+
+Cold start is correspondingly thinner: with a small catalog there is little to
+rank and little for MMR to diversify, and an ad-hoc query naming a book
+TaleTribe does not host has no anchor. That is a known cost, not an oversight.
 
 Read `recommendation_engine/docs/running-locally.md` first — it has the full
 walkthrough (setup, the HTTP API with curl examples, loading the catalog,
 cost figures, seed data, useful SQL). This file is the short version plus
 repo-specific conventions.
 
+`recommendation_engine/docs/README.md` indexes everything. The four to know:
+
+- **`runbook.md`** — symptom-first diagnostics, and the known issues that block
+  a production deploy. Start here when something is wrong.
+- **`jobs.md`** — the three background jobs, why their order is fixed, and what
+  goes stale when one doesn't run.
+- **`security-and-roles.md`** — the `recs_service` grant, the privacy boundary,
+  and the threat table.
+- **`frontend-integration.md`** — the Firebase Function trust boundary and the
+  two UI surfaces that call it.
+
 ## Starting the project
 
 ```bash
 poetry install                                              # or: pip install -e . equivalent deps below
-docker compose -f recommendation_engine/docker-compose.yml up -d   # pgvector Postgres on :5434
-python -m recommendation_engine.migrations.migrate
+# The `recommendations` schema lives in story-data's database, migrated by it.
+(cd ../story-data && docker compose up -d postgres && make migrate)
 
 python -m recommendation_engine.server        # serves on :8100
 curl localhost:8100/health                    # 503 until pgvector>=0.8, HNSW index, and embedder dim=768 all check out
 ```
 
-Zero config needed for local dev — `RECS_DATABASE_URL` defaults to exactly
-what `docker-compose.yml` serves (`postgresql://recs:recs@localhost:5434/recs`),
+Zero config needed for local dev — `RECS_DATABASE_URL` defaults to story-data's
+local stack (`postgresql://postgres:postgres@localhost:5433/story_data`),
 and that default is explicitly rejected when `ENVIRONMENT=production`. Auth
 (`verify_internal_token` in `recommendation_engine/server.py`) is a no-op
 unless `RECS_SERVICE_URL` is set, so no OIDC token is needed locally either.
@@ -44,15 +63,19 @@ unless `RECS_SERVICE_URL` is set, so no OIDC token is needed locally either.
 To have real data to query:
 
 ```bash
-# parse-only, no API calls, no key needed
-python -m recommendation_engine.ingest.backfill --limit 2000 --dry-run
+# what would be read; no API calls, nothing written
+python -m recommendation_engine.ingest.platform --dry-run
 
 # deterministic offline embeddings — exercises the plumbing, not quality
-USE_MOCK=true python -m recommendation_engine.ingest.backfill --limit 300 --skip-normalization
+USE_MOCK=true python -m recommendation_engine.ingest.platform --skip-normalization
 
-# real embeddings (needs GOOGLE_AI_STUDIO_API_KEY)
-python -m recommendation_engine.ingest.backfill --limit 200
+# real embeddings + premise extraction (needs GOOGLE_AI_STUDIO_API_KEY)
+python -m recommendation_engine.ingest.platform
 ```
+
+Incremental by default: each run stores the newest `stories.updated_at` it saw
+in `ingest_runs.cursor` and the next run starts past it. `--full` re-reads
+everything, which is cheap — an unchanged `embed_input_sha` is never re-embedded.
 
 Without `GOOGLE_AI_STUDIO_API_KEY`, ranking still works; HyDE and
 explanations are disabled (both call Gemini directly, not through
@@ -63,10 +86,9 @@ creditProxy — see "Cost controls" below).
 ```bash
 pytest tests/test_rec_*.py -q                    # full suite
 pytest tests/ -q -m unit                         # no infrastructure needed
-RECS_TEST_DATABASE_URL="postgresql://recs:recs@localhost:5434/recs" pytest tests/ -q   # + integration tests
+RECS_TEST_DATABASE_URL="postgresql://postgres:postgres@localhost:5433/story_data" pytest tests/ -q   # + integration tests
 
 python -m recommendation_engine.query_cli --title "Dune" --top-k 6   # rank without an HTTP server
-python -m recommendation_engine.migrations.migrate --status
 ```
 
 `RECS_TEST_DATABASE_URL` is separate from `RECS_DATABASE_URL` on purpose —
@@ -77,13 +99,12 @@ is how CI stays green with no `-m` exclusion in `pytest.ini`).
 
 - **`server.py`** — FastAPI app factory (`create_app()`), port 8100 by
   default. Builds `app.state` singletons (db pool, embedder, LLM client,
-  two rate limiters) once at startup.
+  two rate limiters, the daily LLM meter) once at startup.
 - **`routes.py`** — the HTTP surface, all five routes go through
   `pipeline.rank`, the same function `query_cli` uses:
   - `POST /recommend/adhoc` — seed by book titles and/or free-text prompt
   - `POST /recommend/behavioral` — from a reader's `user_taste` vector;
-    falls back to popularity until the Firestore signals sync (Phase 3)
-    populates it
+    falls back to popularity until the signals sync populates it
   - `POST /recommend/explain` / `GET /recommend/explain/stream` — sync vs.
     SSE-streamed, multiplexed by `item_id`
   - `GET /health` — asserts pgvector version, HNSW index presence, and
@@ -99,16 +120,44 @@ is how CI stays green with no `-m` exclusion in `pytest.ini`).
   collaborative-filtering term (currently stubbed at `cf*0.00`); cold-start
   ramps `alpha` from 0 (pure semantic) as `n_signals` grows.
 - **`hyde.py` / `explain.py`** — the two paths that call Gemini directly.
-  `explain.py` also owns the explanation cache (`ExplanationCache`), which
-  together with the tighter LLM rate bucket is the only thing between a
-  loop and an ungoverned bill.
-- **`ingest/`** — CMU corpus parsing, genre crosswalk, LLM-based
-  normalization, backfill orchestration.
-- **`sync/`** — interaction ingestion (`interactions.py`), aggregate refresh
-  (`stats.py`), and synthetic reader generation for testing scoring
-  mechanics before real signals exist (`synthetic.py`, `seed.py`).
-- **`migrations/`** — a small Python migration runner (`migrate.py`), not
-  Alembic; SQL files in `migrations/*.sql`, applied under an advisory lock.
+  `explain.py` also owns the explanation cache (`ExplanationCache`).
+- **`usage.py`** — the durable daily budgets for those two paths. creditProxy is
+  not in them, so nothing upstream meters them; the in-process bucket bounds
+  bursts but multiplies by the instance count and forgets on deploy. Two
+  ceilings, counted on a UTC day the database assigns, with `search` (HyDE) and
+  `explain` budgeted separately:
+  - **per user** — `recommendations.llm_usage` (story-data migration `000022`),
+    default 10 searches and 30 explanations. Fairness.
+  - **platform-wide** — `llm_platform_usage` (`000023`), default 1000 of each.
+    Solvency: per-user budgets multiply by the user count, so alone they bound
+    nothing in total.
+
+  Both move in one statement whose ordering matters — the platform insert selects
+  `FROM charged_user`, so a user who is already over budget cannot keep driving
+  the platform counter and close the feature for everyone. Charged in
+  `routes._check_rate` before the generation, and **fail-closed**: unlike the
+  bucket, a meter that cannot record a charge must not authorize one. 0 disables
+  a budget; both disabled skips the round trip. Together with the explanation
+  cache, this is what stands between a loop and an ungoverned bill.
+- **`ingest/`** — `platform.py` reads published stories out of story-data (same
+  database, no HTTP), normalizes them with an LLM (`normalize_llm.py`), composes
+  the embed text (`compose.py`) against a controlled theme/tone vocabulary
+  (`vocabularies.py`), and upserts `recommendations.items`. Unpublishing is
+  reconciled by `_retire_unpublished`; deletion is handled by the `story_id`
+  foreign key. The CMU corpus parser, genre crosswalk and backfill are gone.
+- **`sync/`** — aggregate refresh (`stats.py`: `item_stats`, `pop_score`,
+  `user_taste`, `item_cooccurrence`) plus synthetic reader generation
+  (`synthetic.py`, `seed.py`). **Real reader signals are not written here** —
+  story-data derives them from `story_likes`/`story_ratings`/`reading_progress`
+  into `recommendations.interactions` (`story-data sync-recs`), because
+  `reading_progress` is private data this service may not read. Run
+  `seed.py --refresh-only` after a story-data sync to recompute the
+  aggregates.
+- **No `migrations/`** — this service does not migrate anything. The
+  `recommendations` schema lives in story-data's database and is created by
+  `story-data/migrations/000019_recommendations_schema.sql` under goose. Schema
+  changes go there. `/health` fails loudly if the schema is absent, which is
+  what catches starting this service before story-data has migrated.
 
 ## Duplicated files — read before editing
 
@@ -131,24 +180,32 @@ tighter rate bucket:
 - `MAX_REQUESTS_PER_MINUTE_PER_USER` (default 30) — ranking, one DB round trip
 - `MAX_LLM_REQUESTS_PER_MINUTE_PER_USER` (default 6) — HyDE + explanations
 
+## Who calls this
+
+The browser never reaches this service. `taleTribe-frontend`'s Firebase
+Functions `recommendStories` / `explainRecommendations`
+(`functions/src/endpoints/recommendations.ts`) are the only caller: they mint the
+Google OIDC token `verify_internal_token` requires, and they set `user_id` from
+the **verified Firebase token** rather than the request body, so a reader cannot
+ask for another reader's behavioral recommendations. Keep that property if you
+touch the route models — `user_id` arriving in a request body is trusted here
+precisely because the Function is the trust boundary.
+
 ## Ports
 
 | Port | What |
 |---|---|
-| 5434 | pgvector Postgres (this repo's `docker-compose.yml`) |
 | 8100 | this service |
-| 5433 | story-data's Postgres, if running the wider TaleTribe stack alongside this |
+| 5433 | story-data's Postgres — holds the `recommendations` schema |
 
 ## Not built yet
 
-- Firestore interaction sync (Phase 3) — the thing that makes `pop` real
-  and `/recommend/behavioral` return actual personalization instead of a
-  popularity fallback.
+- Scheduling. Both halves — `story-data sync-recs` and
+  `seed.py --refresh-only` — run on demand only; nothing invokes them
+  periodically yet.
 - Eval harness (Phase 6) — see `recommendation_engine/docs/evaluation.md`.
   Until it exists, quality is judged by reading result lists.
 - Deployment (Neon, Terraform, Cloud Run) — see
   `recommendation_engine/docs/deployment.md`.
-- Ingesting TaleTribe's own stories (`item_source = 'platform'`) as a
-  catalog source — the schema and `source`/`source_id` pattern already
-  support it, but the ingest path currently only pulls the CMU bootstrap
-  corpus.
+- **Scheduling the ingest.** `ingest.platform` runs on demand only; nothing
+  invokes it periodically yet.

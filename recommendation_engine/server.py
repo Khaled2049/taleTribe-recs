@@ -8,9 +8,12 @@ owners). It shares the *conventions* of the root app — `create_app()` factory,
 output, singletons on `app.state`, and a stable `{success, data, error}` envelope
 — but none of its state.
 
+The `recommendations` schema lives in story-data's database and is migrated by
+story-data, not here. Start that stack first; this service only reads and writes
+its own schema.
+
 Run locally:
-    docker compose -f recommendation_engine/docker-compose.yml up -d
-    python -m recommendation_engine.migrations.migrate
+    (from repos/story-data)  docker compose up -d postgres && make migrate
     python -m recommendation_engine.server
 """
 
@@ -34,11 +37,12 @@ from embedding_provider import (
     verify_embedding_dimension,
 )
 from rate_limit import PerUserRateLimiter
-from recommendation_engine.config import RecSettings
+from recommendation_engine import usage
 from recommendation_engine.app_state import (
     recommendation_app_state,
     recommendation_state,
 )
+from recommendation_engine.config import RecSettings
 from recommendation_engine.db import Database
 from recommendation_engine.embeddings import QueryEmbedder
 from recommendation_engine.env import REPO_ROOT, load_env
@@ -160,11 +164,6 @@ def create_app() -> FastAPI:
     # before the app is built.
     settings = RecSettings()
 
-    if settings.environment != "production" and not settings.firestore_emulator_host:
-        # Only the platform-catalog sync path touches Firestore; pointing at the
-        # emulator by default keeps local runs off real GCP.
-        os.environ.setdefault("FIRESTORE_EMULATOR_HOST", "localhost:8080")
-
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # The pool is the one piece of startup that can fail for an operational
@@ -226,6 +225,20 @@ def create_app() -> FastAPI:
     state.rate_limiter = PerUserRateLimiter(settings.max_requests_per_minute_per_user)
     state.llm_rate_limiter = PerUserRateLimiter(
         settings.max_llm_requests_per_minute_per_user
+    )
+    # ...and the durable half of that pair. The buckets above bound bursts; this
+    # bounds the day, in Postgres, so it survives a restart and is shared across
+    # instances rather than multiplied by them.
+    state.llm_meter = usage.DailyLlmMeter(
+        state.db,
+        {
+            usage.SEARCH: settings.recs_max_searches_per_day_per_user,
+            usage.EXPLAIN: settings.recs_max_explanations_per_day_per_user,
+        },
+        {
+            usage.SEARCH: settings.recs_max_searches_per_day_platform,
+            usage.EXPLAIN: settings.recs_max_explanations_per_day_platform,
+        },
     )
 
     # Shared with the story agent so the 768-dim contract has one definition.
@@ -290,6 +303,17 @@ def create_app() -> FastAPI:
         A missing HNSW index, a pgvector older than 0.8.0, or an embedder at the
         wrong dimension all produce empty or degraded results rather than errors,
         so each is checked explicitly and reflected in the status code.
+
+        An absent `recommendations` schema is checked for the same reason. This
+        service no longer creates it — story-data does — so an instance started
+        before story-data has migrated would otherwise answer every request with
+        an opaque 500 instead of failing its health check.
+
+        So is a **serving embedder that disagrees with the catalog**. Vectors
+        from different models occupy different spaces; querying one against the
+        other returns confident nonsense rather than an error. An empty catalog
+        is not a mismatch — a fresh database has nothing to disagree with, and
+        must not fail its health check for it.
         """
         state = recommendation_app_state(app)
         embedder = state.embedder
@@ -313,11 +337,28 @@ def create_app() -> FastAPI:
             payload["database"] = {"connected": False, "error": str(exc)}
 
         db_state = payload["database"]
+
+        catalog_model = db_state.get("catalog_embed_model")
+        active_model = getattr(embedder, "model_id", None) if embedder else None
+        payload["catalog_embed_model"] = catalog_model
+        payload["embedder_model"] = active_model
+        payload["embed_model_ok"] = (
+            catalog_model is None or catalog_model == active_model
+        )
+        if not payload["embed_model_ok"]:
+            logger.error(
+                "embedder_model_mismatch",
+                catalog_embed_model=catalog_model,
+                embedder_model=active_model,
+            )
+
         degraded = (
             not db_state.get("connected")
             or not db_state.get("pgvector_ok")
             or not db_state.get("hnsw_index_present")
+            or not db_state.get("schema_present")
             or not payload["embedding_dimension_ok"]
+            or not payload["embed_model_ok"]
         )
         if degraded:
             payload["status"] = "degraded"

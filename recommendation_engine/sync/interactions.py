@@ -1,52 +1,39 @@
-"""The canonical interaction record, and the loader that consumes it.
+"""Synthetic reader signals, and the loader that writes them.
 
-This is the contract between *any* source of reader behaviour and the database.
-Write a source that emits these and everything downstream works.
+**Real reader signals do not come through here any more.** story-data derives
+them straight from `story_likes`, `story_ratings` and `reading_progress` into
+`recommendations.interactions` (`internal/store/recommendations.go`), because
+`reading_progress` is private per-user data this service is not permitted to
+read. The JSONL export format that used to be the contract between the two is
+gone with it.
 
-Shape (one JSON object per line in a `.jsonl` file):
-
-    {"user_id": "synth_0042",
-     "source": "cmu",
-     "source_id": "620",
-     "kind": "rating",
-     "value": 4.0,
-     "occurred_at": "2026-07-14T09:31:00Z"}
-
-    {"user_id": "synth_0042",
-     "source": "cmu",
-     "source_id": "843",
-     "kind": "progress",
-     "value": 0.95,
-     "chapter_index": 11,
-     "total_chapters": 12,
-     "occurred_at": "2026-07-15T20:02:00Z"}
+What remains is the in-memory shape `sync/synthetic.py` generates and `load()`
+writes — the only way to exercise scoring before real traffic exists. Those rows
+are prefixed `synth_` so the story-data sync neither deletes nor derives over
+them.
 
 Field notes, each with a reason:
 
-* **`source` + `source_id`, never the internal `id`.** `items.id` is a surrogate key
-  the database assigns; no external generator or Firestore export can know it. The
-  `(source, source_id)` pair is the stable external identity, and the loader
-  resolves it. Records naming an unknown book are counted and skipped, not fatal.
-* **`kind` is one of `like` | `rating` | `progress`.** Exactly what Firestore has:
-  `stories/{id}/likes/{uid}`, `stories/{id}/ratings/{uid}`, and
-  `users/{uid}/readingProgress/{storyId}`. Nothing richer, because nothing richer
-  exists.
-* **`completion` is NOT a kind.** The platform emits no completion event, so it is
-  *derived* here from progress — one definition, shared by every source, rather
-  than each source inventing its own.
-* **`value`** carries the rating (1-5) for `rating`, or `scroll_percent` (0-1) for
-  `progress`. Unused for `like`.
-* **`occurred_at`** is ISO-8601. Used for recency and for making a re-load
-  idempotent.
+* **`story_id`, never the internal `id`.** `items.id` is a surrogate key the
+  database assigns; no generator can know it. The story's UUID is the stable
+  identity, and the loader resolves it. Records naming an unknown story are
+  counted and skipped, not fatal.
+* **`kind` is one of `like` | `rating` | `progress`.** Exactly what the platform
+  records.
+* **`completion` is NOT a kind.** It is *derived* from progress, here and in
+  story-data's SQL — two implementations of one rule, pinned together by
+  `TestCompletionNeedsLastChapterAndDeepScroll` in story-data.
+* **`value`** carries the rating (1-5) for `rating`, or `scroll_percent` (0-1)
+  for `progress`. Unused for `like`.
 """
 
-import json
 import logging
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple, cast
+from datetime import datetime
+from typing import Optional
 
+from recommendation_engine.db import rows_affected
 from recommendation_engine.scoring import is_negative_signal, seed_engagement_weight
 
 logger = logging.getLogger(__name__)
@@ -72,49 +59,15 @@ SYNTHETIC_USER_PREFIX = "synth_"
 
 @dataclass
 class InteractionRecord:
-    """One reader signal, from any source."""
+    """One synthetic reader signal."""
 
     user_id: str
-    source: str
-    source_id: str
+    story_id: str
     kind: str
     occurred_at: datetime
     value: Optional[float] = None
     chapter_index: Optional[int] = None
     total_chapters: Optional[int] = None
-
-    def to_json(self) -> str:
-        data: dict[str, object] = {
-            "user_id": self.user_id,
-            "source": self.source,
-            "source_id": self.source_id,
-            "kind": self.kind,
-            "occurred_at": self.occurred_at.astimezone(timezone.utc).isoformat(),
-        }
-        if self.value is not None:
-            data["value"] = self.value
-        if self.chapter_index is not None:
-            data["chapter_index"] = self.chapter_index
-        if self.total_chapters is not None:
-            data["total_chapters"] = self.total_chapters
-        return json.dumps({k: v for k, v in data.items() if v is not None})
-
-    @classmethod
-    def from_json(cls, line: str) -> "InteractionRecord":
-        parsed = cast(object, json.loads(line))
-        if not isinstance(parsed, dict):
-            raise ValueError("interaction record must be a JSON object")
-        raw = cast(dict[str, object], parsed)
-        return cls(
-            user_id=str(raw["user_id"]),
-            source=str(raw["source"]),
-            source_id=str(raw["source_id"]),
-            kind=str(raw["kind"]),
-            occurred_at=_parse_ts(raw["occurred_at"]),
-            value=(None if raw.get("value") is None else float(raw["value"])),
-            chapter_index=_optional_int(raw.get("chapter_index")),
-            total_chapters=_optional_int(raw.get("total_chapters")),
-        )
 
     @property
     def is_complete(self) -> bool:
@@ -133,18 +86,6 @@ class InteractionRecord:
         return on_last_chapter and scrolled
 
 
-def _optional_int(value: object | None) -> int | None:
-    return None if value is None else int(value)
-
-
-def _parse_ts(value: object) -> datetime:
-    if isinstance(value, datetime):
-        dt = value
-    else:
-        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-
-
 @dataclass
 class LoadStats:
     read: int = 0
@@ -154,7 +95,7 @@ class LoadStats:
     completions_derived: int = 0
     negative_signals: int = 0
     users: int = 0
-    unknown_examples: List[str] = field(default_factory=list)
+    unknown_examples: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         data = self.__dict__.copy()
@@ -162,43 +103,16 @@ class LoadStats:
         return data
 
 
-def read_jsonl(path: Path) -> Iterator[InteractionRecord]:
-    """Stream records from a .jsonl file, skipping blank and malformed lines."""
-    with path.open(encoding="utf-8") as handle:
-        for number, line in enumerate(handle, start=1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                yield InteractionRecord.from_json(line)
-            except (json.JSONDecodeError, KeyError, ValueError) as exc:
-                logger.warning("interaction_line_skipped line=%d error=%s", number, exc)
-
-
-def write_jsonl(path: Path, records: Iterable[InteractionRecord]) -> int:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    count = 0
-    with path.open("w", encoding="utf-8") as handle:
-        for record in records:
-            handle.write(record.to_json() + "\n")
-            count += 1
-    return count
-
-
-async def _resolve_items(pool, keys: Sequence[Tuple[str, str]]) -> Dict[tuple, int]:
-    """Map (source, source_id) -> items.id."""
-    if not keys:
+async def _resolve_items(pool, story_ids: Sequence[str]) -> dict[str, int]:
+    """Map story_id -> items.id."""
+    if not story_ids:
         return {}
-    sources = [k[0] for k in keys]
-    source_ids = [k[1] for k in keys]
     rows = await pool.fetch(
-        "SELECT id, source::text AS source, source_id FROM recommendations.items "
-        "WHERE (source::text, source_id) IN "
-        "(SELECT * FROM UNNEST($1::text[], $2::text[]))",
-        sources,
-        source_ids,
+        "SELECT id, story_id FROM recommendations.items "
+        "WHERE story_id = ANY($1::uuid[])",
+        list(story_ids),
     )
-    return {(row["source"], row["source_id"]): row["id"] for row in rows}
+    return {str(row["story_id"]): row["id"] for row in rows}
 
 
 async def load(pool, records: Iterable[InteractionRecord]) -> LoadStats:
@@ -214,7 +128,7 @@ async def load(pool, records: Iterable[InteractionRecord]) -> LoadStats:
     different information — how far they got, and that they finished.
     """
     stats = LoadStats()
-    batch: List[InteractionRecord] = []
+    batch: list[InteractionRecord] = []
     users = set()
 
     for record in records:
@@ -229,17 +143,15 @@ async def load(pool, records: Iterable[InteractionRecord]) -> LoadStats:
     if not batch:
         return stats
 
-    resolved = await _resolve_items(
-        pool, list({(r.source, r.source_id) for r in batch})
-    )
+    resolved = await _resolve_items(pool, list({r.story_id for r in batch}))
 
-    rows: List[tuple] = []
+    rows: list[tuple] = []
     for record in batch:
-        item_id = resolved.get((record.source, record.source_id))
+        item_id = resolved.get(record.story_id)
         if item_id is None:
             stats.unknown_item += 1
             if len(stats.unknown_examples) < 10:
-                stats.unknown_examples.append(f"{record.source}:{record.source_id}")
+                stats.unknown_examples.append(record.story_id)
             continue
 
         if is_negative_signal(record.kind, record.value):
@@ -311,7 +223,4 @@ async def purge_synthetic(pool, prefix: str = SYNTHETIC_USER_PREFIX) -> int:
         "DELETE FROM recommendations.interactions WHERE user_id LIKE $1",
         prefix + "%",
     )
-    try:
-        return int(str(result).split()[-1])
-    except (ValueError, IndexError):
-        return 0
+    return rows_affected(result)

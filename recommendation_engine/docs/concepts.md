@@ -54,7 +54,7 @@ measurably improves retrieval over embedding both identically.
 The catch: **a corpus must never mix task types.** Vectors embedded as documents and
 vectors embedded as queries live in slightly different places, so mixing them
 degrades every search with no error raised. We record `embed_task_type` on every row
-and the backfill refuses to mix.
+and the ingest refuses to mix.
 
 ### Matryoshka truncation, and why 768
 
@@ -74,7 +74,7 @@ to mutate the 768 one, which would invalidate everything at once.
 
 ### What we embed — and what we deliberately don't
 
-We **never embed a raw plot summary.** A CMU summary averages 413 words of plot
+We **never embed raw prose.** A plot summary is hundreds of words of plot
 incident — who did what to whom, in order. Embedded directly, that buries the signal a
 recommender ranks on under a mass of proper nouns and sequence. Two unrelated books
 that both feature a train and a betrayal end up neighbours.
@@ -184,7 +184,7 @@ Vector search finds *candidates*; the other indexes make *filtering* them cheap.
 | `items_title_trgm`, `items_author_trgm` | GIN + trigram | fuzzy title matching — readers misremember titles |
 | `items_word_count` | B-tree (partial) | length filters |
 | `items_source_elig` | B-tree | platform-only queries |
-| `items_source_source_id_key` | unique | external identity, and idempotent upserts |
+| `items_story_id_key` | unique | one catalog row per story, and idempotent upserts |
 
 **GIN** (Generalized Inverted Index) maps each element to the rows containing it —
 the right structure for "which rows have `horror` in this array". **Trigram** indexes
@@ -473,20 +473,16 @@ Observed in production data with 250 synthetic readers:
 | 20 | 0.50 | 0.125 | moderate |
 | 100 | 0.83 | 0.208 | maximum |
 
-### The source multiplier: decaying scaffolding
+### No source multiplier
 
-```
-src(i) = 1.0                                    platform
-src(i) = max(0.25, 1 − N_platform / 5000)       cmu
-```
+There used to be one. A CMU bootstrap corpus shared the catalog with TaleTribe
+stories and was multiplied down as the real catalog grew. The corpus is gone —
+every item is a published TaleTribe story — so the term, its two config knobs,
+and the `off_platform` flag went with it.
 
-Monotonically decreasing in the size of the real catalog, so the seed corpus fades
-automatically as TaleTribe fills in — no manual cutover, no flag to remember. At 0
-platform stories CMU sits at 1.0; at 2,500 it's 0.5; past 3,750 it rests on the floor.
-
-**The floor is deliberately not zero.** Even a mature catalog benefits from CMU books
-as *taste-space anchors* for ad-hoc queries, where a reader names a book the platform
-will never host.
+The problem it solved has not gone away: a small catalog gives a thin shelf, and
+an ad-hoc query naming a book TaleTribe does not host now has no anchor to match
+against. That is a known cost of platform-only, not an oversight.
 
 ---
 

@@ -8,8 +8,9 @@ both DSNs are identical and a single pool is shared.
 """
 
 import logging
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Optional, Sequence
+from typing import Optional
 
 import asyncpg
 from pgvector.asyncpg import register_vector
@@ -21,7 +22,21 @@ logger = logging.getLogger(__name__)
 # would still answer, but filtered queries would quietly under-return.
 MIN_PGVECTOR_VERSION = (0, 8, 0)
 
-HNSW_INDEX_NAME = "items_embedding_hnsw"
+HNSW_INDEX_NAME = "items_embedding_hnsw_idx"
+
+# One table from each story-data migration serving depends on: `items` stands
+# for 000019's catalog tables, the other two are the daily budgets from 000022
+# and 000023. A database missing any of them fails health, rather than passing
+# it and then answering every metered request with a 503.
+REQUIRED_TABLES = ("items", "llm_usage", "llm_platform_usage")
+
+
+def rows_affected(status: str) -> int:
+    """The row count from an asyncpg command status such as 'UPDATE 3'."""
+    try:
+        return int(str(status).split()[-1])
+    except (ValueError, IndexError):
+        return 0
 
 
 def _parse_version(raw: str) -> tuple:
@@ -164,13 +179,27 @@ class Database:
         A missing extension, a too-old pgvector, or a missing HNSW index all
         produce *silently* worse results rather than errors, so each is asserted
         explicitly here instead of being discovered by a user.
+
+        `schema_present` is the check that replaced a schema version: this
+        service no longer migrates anything — story-data owns the
+        `recommendations` schema — so the failure it has to catch is being
+        pointed at a database that has not been migrated yet, which is a
+        startup ordering mistake rather than a version skew.
+
+        `catalog_embed_model` is reported so the caller can compare it to the
+        *serving* embedder. The ingest already refuses to reuse a vector from a
+        different provider, but nothing stopped the query side from drifting:
+        embedding a query with one model and searching a catalog built by
+        another returns plausible-looking nonsense, ranked confidently, with no
+        error and a green health check.
         """
         report: dict = {
             "connected": False,
             "pgvector_version": None,
             "pgvector_ok": False,
             "hnsw_index_present": False,
-            "schema_version": None,
+            "schema_present": False,
+            "catalog_embed_model": None,
             "item_count": None,
             "eligible_count": None,
         }
@@ -194,14 +223,15 @@ class Database:
                 )
             )
 
-            has_migrations_table = await conn.fetchval(
-                "SELECT 1 FROM information_schema.tables WHERE table_schema = "
-                "'recommendations' AND table_name = 'schema_migrations'"
+            # information_schema lists only tables this role holds a privilege
+            # on, so this also fails when story-data's grants did not apply.
+            visible = await conn.fetchval(
+                "SELECT count(*) FROM information_schema.tables WHERE table_schema = "
+                "'recommendations' AND table_name = ANY($1::text[])",
+                list(REQUIRED_TABLES),
             )
-            if has_migrations_table:
-                report["schema_version"] = await conn.fetchval(
-                    "SELECT MAX(version) FROM recommendations.schema_migrations"
-                )
+            report["schema_present"] = visible == len(REQUIRED_TABLES)
+            if report["schema_present"]:
                 counts = await conn.fetchrow(
                     "SELECT COUNT(*) AS total, "
                     "COUNT(*) FILTER (WHERE is_eligible AND embedding IS NOT NULL) "
@@ -209,6 +239,16 @@ class Database:
                 )
                 report["item_count"] = counts["total"]
                 report["eligible_count"] = counts["eligible"]
+                # The dominant model among rows that can actually be retrieved.
+                # A tie or a mixed catalog is itself a problem, and reporting the
+                # majority is enough to surface it: whichever the serving
+                # embedder is, it will disagree with something.
+                report["catalog_embed_model"] = await conn.fetchval(
+                    "SELECT embed_model FROM recommendations.items "
+                    "WHERE is_eligible AND embedding IS NOT NULL "
+                    "AND embed_model IS NOT NULL "
+                    "GROUP BY embed_model ORDER BY count(*) DESC LIMIT 1"
+                )
 
         return report
 

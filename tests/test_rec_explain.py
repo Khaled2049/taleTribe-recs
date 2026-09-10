@@ -4,12 +4,9 @@ No network: the Gemini client is a fake.
 """
 
 import json
-import os
 from typing import cast
 
 import pytest
-
-os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "test-project")
 
 from recommendation_engine import explain as explain_mod  # noqa: E402
 from recommendation_engine import hyde as hyde_mod  # noqa: E402
@@ -18,11 +15,10 @@ from recommendation_engine.llm import LLMResponseError  # noqa: E402
 pytestmark = pytest.mark.unit
 
 
-def _target(item_id=1, sha="sha1", source="cmu", source_id="s1"):
+def _target(item_id=1, sha="sha1", story_id="story-1"):
     return explain_mod.ExplanationTarget(
         item_id=item_id,
-        source=source,
-        source_id=source_id,
+        story_id=story_id,
         title=f"Book {item_id}",
         author="An Author",
         genres=["horror"],
@@ -84,8 +80,8 @@ class _FakeCache:
 
 
 def test_same_inputs_give_the_same_key():
-    a = explain_mod.cache_key("m", "cmu", "1", "sha", "fp")
-    b = explain_mod.cache_key("m", "cmu", "1", "sha", "fp")
+    a = explain_mod.cache_key("m", "story-1", "sha", "fp")
+    b = explain_mod.cache_key("m", "story-1", "sha", "fp")
 
     assert a == b
 
@@ -94,16 +90,13 @@ def test_same_inputs_give_the_same_key():
     "kwargs",
     [
         {"model": "other"},
-        {"source": "platform"},
-        {"source_id": "2"},
+        {"story_id": "story-2"},
         {"embed_input_sha": "different"},
         {"fingerprint": "other-fp"},
     ],
 )
 def test_every_component_changes_the_key(kwargs):
-    base = dict(
-        model="m", source="cmu", source_id="1", embed_input_sha="sha", fingerprint="fp"
-    )
+    base = dict(model="m", story_id="story-1", embed_input_sha="sha", fingerprint="fp")
     assert explain_mod.cache_key(**base) != explain_mod.cache_key(**{**base, **kwargs})
 
 

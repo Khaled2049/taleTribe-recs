@@ -23,13 +23,14 @@ backfill rather than a rescoring rewrite.
 """
 
 import math
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Dict, Iterable, Mapping, Optional, Sequence
+from typing import Optional
 
 # Fallback knob values, used when a key is missing from recommendations.config.
 # The table is the source of truth; these keep the service ranking sensibly
 # rather than raising if a migration has not seeded a new knob yet.
-DEFAULTS: Dict[str, float] = {
+DEFAULTS: dict[str, float] = {
     "w_pop_ceiling": 0.25,
     "w_cf_ceiling": 0.00,
     "ramp_n_min": 5,
@@ -41,17 +42,12 @@ DEFAULTS: Dict[str, float] = {
     "pop_completion_mult": 3.00,
     "rrf_k": 60,
     "mmr_lambda": 0.70,
-    "cmu_target_catalog": 5000,
-    "cmu_weight_floor": 0.25,
 }
 
 # Semantic similarity must never stop being the dominant signal — vector search
 # does the ranking and the other terms only adjust it. Asserted in
 # ScoringConfig so a bad tune in the database cannot quietly invert the design.
 MAX_BEHAVIORAL_WEIGHT = 0.45
-
-PLATFORM_SOURCE = "platform"
-CMU_SOURCE = "cmu"
 
 
 def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
@@ -73,8 +69,6 @@ class ScoringConfig:
     pop_completion_mult: float = DEFAULTS["pop_completion_mult"]
     rrf_k: float = DEFAULTS["rrf_k"]
     mmr_lambda: float = DEFAULTS["mmr_lambda"]
-    cmu_target_catalog: float = DEFAULTS["cmu_target_catalog"]
-    cmu_weight_floor: float = DEFAULTS["cmu_weight_floor"]
 
     @classmethod
     def from_mapping(cls, values: Optional[Mapping[str, float]]) -> "ScoringConfig":
@@ -103,8 +97,6 @@ class ScoringConfig:
             pop_completion_mult=max(0.0, float(merged["pop_completion_mult"])),
             rrf_k=max(1.0, float(merged["rrf_k"])),
             mmr_lambda=_clamp(float(merged["mmr_lambda"])),
-            cmu_target_catalog=max(1.0, float(merged["cmu_target_catalog"])),
-            cmu_weight_floor=_clamp(float(merged["cmu_weight_floor"])),
         )
 
 
@@ -270,34 +262,6 @@ def collaborative_score(
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# Source weighting: the CMU corpus is temporary scaffolding
-# ══════════════════════════════════════════════════════════════════════════
-
-
-def source_weight(
-    source: str, platform_item_count: float, config: ScoringConfig
-) -> float:
-    """Multiplier applied to the blended score, by item source.
-
-        platform -> 1.0
-        cmu      -> max(floor, 1 - N_platform / N_target)
-
-    Monotonically decreasing in the size of the real catalog, so the seed corpus
-    fades as the platform fills in rather than needing a manual cutover. At 0
-    platform stories CMU sits at 1.0; at half the target, 0.5; past ~3,750 it
-    rests on the floor.
-
-    The floor is not zero on purpose: even a mature catalog benefits from CMU
-    books as *taste-space anchors* for ad-hoc queries ("I liked Dune"), where a
-    reader names a book the platform will never host.
-    """
-    if source != CMU_SOURCE:
-        return 1.0
-    fraction = max(0.0, float(platform_item_count)) / config.cmu_target_catalog
-    return max(config.cmu_weight_floor, 1.0 - fraction)
-
-
-# ══════════════════════════════════════════════════════════════════════════
 # The blend
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -319,7 +283,6 @@ class ScoreBreakdown:
     w_popularity: float
     w_collaborative: float
     alpha: float
-    source_weight: float
 
     def as_dict(self) -> dict:
         return {
@@ -333,7 +296,6 @@ class ScoreBreakdown:
                 "collaborative": round(self.w_collaborative, 4),
             },
             "alpha": round(self.alpha, 4),
-            "source_weight": round(self.source_weight, 4),
         }
 
 
@@ -342,20 +304,17 @@ def blend(
     popularity_score: float,
     collaborative: float,
     n_interactions: float,
-    source: str,
-    platform_item_count: float,
     config: ScoringConfig,
 ) -> ScoreBreakdown:
     """Combine the three terms into a final score in [0, 1]."""
     alpha = behavioral_ramp(n_interactions, config)
     w_sem, w_pop, w_cf = term_weights(alpha, config)
-    src = source_weight(source, platform_item_count, config)
 
     sem = _clamp(semantic)
     pop = _clamp(popularity_score)
     cf = _clamp(collaborative)
 
-    score = src * (w_sem * sem + w_pop * pop + w_cf * cf)
+    score = w_sem * sem + w_pop * pop + w_cf * cf
 
     return ScoreBreakdown(
         score=_clamp(score),
@@ -366,7 +325,6 @@ def blend(
         w_popularity=w_pop,
         w_collaborative=w_cf,
         alpha=alpha,
-        source_weight=src,
     )
 
 
@@ -381,7 +339,6 @@ class CatalogStats:
 
     global_mean_rating: float = 3.5
     p95_engagement: float = 10.0
-    platform_item_count: float = 0.0
 
     @classmethod
     def from_row(cls, row: Optional[Mapping]) -> "CatalogStats":
@@ -392,7 +349,6 @@ class CatalogStats:
             # the true mean would penalise every lightly-rated book.
             global_mean_rating=float(row.get("global_mean_rating") or 3.5),
             p95_engagement=float(row.get("p95_engagement") or 10.0),
-            platform_item_count=float(row.get("platform_item_count") or 0.0),
         )
 
 
@@ -439,10 +395,8 @@ def is_negative_signal(kind: str, value: Optional[float]) -> bool:
 
 
 __all__: Iterable[str] = [
-    "CMU_SOURCE",
     "DEFAULTS",
     "MAX_BEHAVIORAL_WEIGHT",
-    "PLATFORM_SOURCE",
     "CatalogStats",
     "ScoreBreakdown",
     "ScoringConfig",
@@ -456,6 +410,5 @@ __all__: Iterable[str] = [
     "percentile",
     "popularity",
     "seed_engagement_weight",
-    "source_weight",
     "term_weights",
 ]

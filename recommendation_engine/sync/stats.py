@@ -9,17 +9,18 @@ recommendations need no runtime embedding call at all: the reader's taste is
 already a point in the same space as the catalog.
 
 Both are source-agnostic. Whether the interactions came from a synthetic generator
-or from Firestore, this code is identical — which is the whole reason the loader and
-the source are separated.
+or from story-data's sync, this code is identical — which is the whole reason the
+loader and the source are separated.
 """
 
 import logging
 from dataclasses import dataclass
-from typing import List, Optional, cast
+from typing import Optional, cast
 
 import numpy as np
 import numpy.typing as npt
 
+from recommendation_engine.db import rows_affected
 from recommendation_engine.scoring import ScoringConfig, popularity
 
 logger = logging.getLogger(__name__)
@@ -276,13 +277,10 @@ async def rebuild_cooccurrence(pool, config: ScoringConfig, min_cooc: int = 3) -
         min_cooc,
         config.cf_shrinkage_lambda,
     )
-    try:
-        return int(str(result).split()[-1])
-    except (ValueError, IndexError):
-        return 0
+    return rows_affected(result)
 
 
-__all__: List[str] = [
+__all__: list[str] = [
     "MIN_SIGNALS_FOR_TASTE",
     "RefreshStats",
     "rebuild_cooccurrence",

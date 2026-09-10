@@ -1,0 +1,50 @@
+name: PR Validation
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: pr-recs-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
+  infrastructure:
+    name: Terraform and container
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout recommendations
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.14.4
+          terraform_wrapper: false
+
+      - name: Validate Terraform
+        working-directory: recommendation_engine/terraform
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false
+          terraform validate
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Reads the layer cache the deploy workflow writes, so a PR that leaves the
+      # dependencies alone does not rebuild every wheel. It never writes to it.
+      - name: Build container
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: novelsync-recs:pr
+          cache-from: type=gha

@@ -1,7 +1,13 @@
 # API reference — with a trace of what happens inside
 
 Five endpoints. Every request/response below was captured from a live local server
-against the 1,987-book catalog, not written by hand.
+recorded against a real catalog, not written by hand.
+
+> **The worked examples below were recorded against the old CMU-seeded catalog**, so
+> they name books TaleTribe does not host (*Dune: House Harkonnen*, *A Separate
+> Peace*). The request and response **shapes** are current and correct; only the
+> titles are historical. Every item you get back today is a published TaleTribe
+> story, addressable by its `story_id`.
 
 **Envelope.** Every JSON response is `{success, data, error}`, matching the story
 agent's shape so the Firebase Functions bridge can treat both services identically.
@@ -92,8 +98,7 @@ curl -X POST localhost:8100/recommend/adhoc \
     "items": [
       {
         "id": 3205,
-        "source": "cmu",
-        "source_id": "867886",
+        "story_id": "3f9c1a2e-5b47-4d18-9f60-1c2b3a4d5e6f",
         "title": "Dune: House Harkonnen",
         "author": "Kevin J. Anderson",
         "genres": ["science-fiction"],
@@ -104,7 +109,6 @@ curl -X POST localhost:8100/recommend/adhoc \
                          the spice melange, House Harkonnen consolidates power...",
         "published_year": 2000,
         "score": 0.885314,
-        "off_platform": true,
         "matched_query_count": 1,
         "explanation_cache_key": "40d8fa1de64df816408dad3d4ed88310f37c0735fb0154cc..."
       }
@@ -142,7 +146,7 @@ curl -X POST localhost:8100/recommend/adhoc \
 8. **MMR** over the 10 candidates, λ = 0.7, selecting 2. Reports
    `diversity = 0.1379` — low, i.e. the two results are similar. Honest signal.
 9. **Cache keys.** For each item,
-   `sha256(model | prompt_ver | source:source_id | embed_input_sha | query_fingerprint)`.
+   `sha256(model | prompt_ver | story_id | embed_input_sha | query_fingerprint)`.
 
 ### Example 2: free text, via HyDE
 
@@ -237,9 +241,9 @@ curl -X POST localhost:8100/recommend/behavioral \
     "mode": "behavioral",
     "n_signals": 23,
     "items": [
-      {"title": "Alphabet of Thorn", "score": 0.8891, "off_platform": true},
-      {"title": "A Separate Peace",  "score": 0.8734, "off_platform": true},
-      {"title": "The Wanting Seed",  "score": 0.8702, "off_platform": true}
+      {"title": "Alphabet of Thorn", "score": 0.8891},
+      {"title": "A Separate Peace",  "score": 0.8734},
+      {"title": "The Wanting Seed",  "score": 0.8702}
     ],
     "degraded": false,
     "diversity": 0.2104,
@@ -332,7 +336,7 @@ a shelf with nine reasons and one blank beats an error page.
 ### The cache key
 
 ```
-sha256(model | PROMPT_VERSION | source:source_id | embed_input_sha | query_fingerprint)
+sha256(model | PROMPT_VERSION | story_id | embed_input_sha | query_fingerprint)
 ```
 
 Each component prevents a specific staleness:
@@ -341,7 +345,7 @@ Each component prevents a specific staleness:
 |---|---|
 | `model` | serving text written by a different model |
 | `PROMPT_VERSION` | serving text written under different instructions |
-| `source:source_id` | mixing books up |
+| `story_id` | mixing stories up |
 | `embed_input_sha` | **self-invalidating** — if a book's premise or themes are re-derived, its hash changes and the stale explanation is abandoned automatically |
 | `query_fingerprint` | reusing "why you'll like this" across unrelated requests |
 
@@ -429,7 +433,7 @@ python -m recommendation_engine.query_cli --title "Dune" --scores
 ```
 
 ```
- 1. 0.8853  Dune: House Harkonnen — Kevin J. Anderson (2000) [off-platform]
+ 1. 0.8853  Dune: House Harkonnen — Kevin J. Anderson (2000)
       genres: science-fiction
       sem=0.8853*1.00  pop=0.4395*0.00  cf=0.0000*0.00  alpha=0.00  src=1.00
 ```

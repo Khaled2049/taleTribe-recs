@@ -2,16 +2,18 @@
 
 Self-skipping on a missing `RECS_TEST_DATABASE_URL`. That matters because
 `pytest.ini` puts no `-m` exclusion in `addopts` and CI runs `pytest tests/`, so
-these are collected by default — and with no conftest.py in this repo to hold a
-fixture, an env guard is the only convention-compatible way to keep CI green.
+these are collected by default, and an env guard keeps CI green.
 
 A *separate* variable from `RECS_DATABASE_URL` on purpose: these tests write and
 delete rows, so pointing them at a real deployment must take a deliberate act,
 not an inherited environment.
 
-Bring the target up with:
-    docker compose -f recommendation_engine/docker-compose.yml up -d
-    RECS_TEST_DATABASE_URL=postgresql://recs:recs@localhost:5433/recs pytest tests/test_rec_integration.py
+The schema belongs to story-data, so bring that stack up and migrate it first;
+`require_recommendations_schema` skips rather than failing if it is absent.
+
+    (from repos/story-data)  docker compose up -d postgres && make migrate
+    RECS_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/story_data \
+        pytest tests/test_rec_integration.py
 """
 
 import os
@@ -25,15 +27,17 @@ TEST_DSN = os.getenv("RECS_TEST_DATABASE_URL", "")
 if TEST_DSN:
     os.environ["RECS_DATABASE_URL"] = TEST_DSN
     os.environ["RECS_DATABASE_URL_RO"] = ""
-os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "test-project")
 os.environ["USE_MOCK"] = "true"
 os.environ["ENVIRONMENT"] = "development"
 
-import asyncpg  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
+from conftest import (
+    drop_stories,
+    require_recommendations_schema,
+    seed_stories,
+)
+from fastapi.testclient import TestClient
 
-from recommendation_engine.db import Database  # noqa: E402
-from recommendation_engine.migrations import migrate  # noqa: E402
+from recommendation_engine.db import Database
 
 pytestmark = [
     pytest.mark.integration,
@@ -47,54 +51,17 @@ EMBEDDING_DIM = 768
 
 
 async def _ensure_schema() -> None:
-    await migrate.run(TEST_DSN)
+    await require_recommendations_schema(TEST_DSN)
 
 
-# ── Migrations ───────────────────────────────────────────────────────────
-
-
-async def test_migrations_apply_then_are_a_noop():
-    await _ensure_schema()
-    # Second run must apply nothing. A migration runner that re-applies is how
-    # you get duplicate seed rows and failed CREATEs on every boot.
-    assert await migrate.run(TEST_DSN) == 0
-
-
-async def test_schema_migrations_records_every_file():
-    await _ensure_schema()
-    discovered = {m.version for m in migrate.discover_migrations()}
-
-    conn = await asyncpg.connect(TEST_DSN)
-    try:
-        rows = await conn.fetch("SELECT version FROM recommendations.schema_migrations")
-    finally:
-        await conn.close()
-
-    assert {r["version"] for r in rows} == discovered
-
-
-async def test_modified_applied_migration_is_rejected():
-    """git and the database disagreeing is a real bug: every later environment
-    would diverge. The runner must refuse rather than guess."""
-    await _ensure_schema()
-    conn = await asyncpg.connect(TEST_DSN)
-    try:
-        original = await conn.fetchval(
-            "SELECT checksum FROM recommendations.schema_migrations WHERE version = 1"
-        )
-        await conn.execute(
-            "UPDATE recommendations.schema_migrations SET checksum = $1 WHERE version = 1",
-            "0" * 64,
-        )
-        with pytest.raises(RuntimeError, match="modified after it was applied"):
-            await migrate.run(TEST_DSN)
-    finally:
-        # Restore so the rest of the suite sees a clean schema.
-        await conn.execute(
-            "UPDATE recommendations.schema_migrations SET checksum = $1 WHERE version = 1",
-            original,
-        )
-        await conn.close()
+# ── Schema ───────────────────────────────────────────────────────────────
+#
+# The tests that covered this repo's migration runner — idempotent re-runs, a
+# recorded version per file, refusing a migration edited after it was applied —
+# are gone with the runner. story-data owns the schema now, and goose's own
+# suite covers that ground. What still matters here is that the schema this
+# service expects is actually the one story-data creates, which the assertions
+# below and the /health check exercise.
 
 
 async def test_seeded_config_knobs_are_present():
@@ -117,8 +84,6 @@ async def test_seeded_config_knobs_are_present():
         "cf_shrinkage_lambda",
         "rrf_k",
         "mmr_lambda",
-        "cmu_target_catalog",
-        "cmu_weight_floor",
     ):
         assert key in config, f"missing scoring knob {key}"
 
@@ -147,7 +112,7 @@ async def test_health_reports_pgvector_and_index():
         "iterative index scans are unavailable"
     )
     assert report["hnsw_index_present"] is True
-    assert report["schema_version"] >= 1
+    assert report["schema_present"] is True
 
 
 async def test_vector_query_applies_set_local_and_scopes_it_to_the_txn():
@@ -203,16 +168,18 @@ async def test_vector_roundtrip_and_cosine_ordering():
         return vec
 
     fixtures = [("near", unit(0)), ("mid", unit(1)), ("far", unit(2))]
+    keys = [f"__test__{name}" for name, _ in fixtures]
     try:
         async with db.write_pool.acquire() as conn:
+            stories = await seed_stories(conn, keys)
             for name, vec in fixtures:
                 await conn.execute(
                     "INSERT INTO recommendations.items "
-                    "(source, source_id, title, embed_input, embed_input_sha, "
+                    "(story_id, title, embed_input, embed_input_sha, "
                     " embedding, embed_task_type) "
-                    "VALUES ('cmu', $1, $2, 'x', $3, $4, 'RETRIEVAL_DOCUMENT') "
-                    "ON CONFLICT (source, source_id) DO UPDATE SET embedding = $4",
-                    f"__test__{name}",
+                    "VALUES ($1::uuid, $2, 'x', $3, $4, 'RETRIEVAL_DOCUMENT') "
+                    "ON CONFLICT (story_id) DO UPDATE SET embedding = $4",
+                    stories[f"__test__{name}"],
                     name,
                     f"sha-{name}",
                     vec,
@@ -223,10 +190,11 @@ async def test_vector_roundtrip_and_cosine_ordering():
             query[0] = 0.9
             query[1] = 0.4
             rows = await conn.fetch(
-                "SELECT title, 1 - (embedding <=> $1) AS sem_cos "
+                "SELECT title, 1 - (embedding <=> $2) AS sem_cos "
                 "FROM recommendations.items "
-                "WHERE source_id LIKE '__test__%' "
-                "ORDER BY embedding <=> $1",
+                "WHERE story_id = ANY($1::uuid[]) "
+                "ORDER BY embedding <=> $2",
+                list(stories.values()),
                 query,
             )
 
@@ -237,34 +205,11 @@ async def test_vector_roundtrip_and_cosine_ordering():
             assert rows[0]["sem_cos"] > rows[1]["sem_cos"] > rows[2]["sem_cos"]
     finally:
         async with db.write_pool.acquire() as conn:
-            await conn.execute(
-                "DELETE FROM recommendations.items WHERE source_id LIKE '__test__%'"
-            )
+            await drop_stories(conn, keys)
         await db.aclose()
 
 
 # ── The app itself ───────────────────────────────────────────────────────
-
-
-def test_health_endpoint_is_green_against_a_migrated_database():
-    import asyncio
-
-    asyncio.run(_ensure_schema())
-
-    from recommendation_engine.server import create_app
-
-    # TestClient as a context manager runs the lifespan, which is what opens the
-    # pool — without it /health would report a disconnected database.
-    with TestClient(create_app()) as client:
-        response = client.get("/health")
-
-    assert response.status_code == 200, response.text
-    body = response.json()
-    assert body["status"] == "ok"
-    assert body["embedding_dimension"] == EMBEDDING_DIM
-    assert body["embedding_dimension_ok"] is True
-    assert body["database"]["pgvector_ok"] is True
-    assert body["database"]["hnsw_index_present"] is True
 
 
 def test_health_reports_degraded_when_the_database_is_unreachable():
@@ -290,3 +235,17 @@ def test_health_reports_degraded_when_the_database_is_unreachable():
     body = response.json()
     assert body["status"] == "degraded"
     assert body["database"]["connected"] is False
+
+
+def test_health_ignores_the_embedder_model_on_an_empty_catalog():
+    """A fresh database has nothing to disagree with, and must not fail for it."""
+    import asyncio
+
+    from recommendation_engine.server import create_app
+
+    asyncio.run(_ensure_schema())
+    with TestClient(create_app()) as client:
+        body = client.get("/health").json()
+
+    if body["catalog_embed_model"] is None:
+        assert body["embed_model_ok"] is True

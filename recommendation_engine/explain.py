@@ -21,8 +21,9 @@ import asyncio
 import hashlib
 import json
 import logging
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
-from typing import AsyncIterator, Dict, List, Optional, Sequence
+from typing import Optional
 
 from recommendation_engine.llm import GeminiClient, LLMError
 
@@ -47,7 +48,7 @@ def query_fingerprint(
     same query — otherwise a shelf re-render with reordered seeds would miss the
     cache on every item.
     """
-    parts: List[str] = []
+    parts: list[str] = []
     if query:
         parts.append(" ".join(query.split()).casefold())
     if seed_item_ids:
@@ -59,8 +60,7 @@ def query_fingerprint(
 
 def cache_key(
     model: str,
-    source: str,
-    source_id: str,
+    story_id: str,
     embed_input_sha: str,
     fingerprint: str,
 ) -> str:
@@ -70,16 +70,14 @@ def cache_key(
 
     * `model` + `PROMPT_VERSION` — a different model or prompt writes different
       prose, so the old text must not be served.
-    * `source:source_id` — which book.
+    * `story_id` — which story.
     * `embed_input_sha` — **self-invalidating**: if the item's premise, themes or
       tone are re-derived, its hash changes and the stale explanation is abandoned
       automatically. No cache-busting logic to remember.
     * `fingerprint` — the same book explained for a different request needs a
       different sentence.
     """
-    payload = (
-        f"{model}|{PROMPT_VERSION}|{source}:{source_id}|{embed_input_sha}|{fingerprint}"
-    )
+    payload = f"{model}|{PROMPT_VERSION}|{story_id}|{embed_input_sha}|{fingerprint}"
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
@@ -88,13 +86,12 @@ class ExplanationTarget:
     """One thing to explain. Built from a pipeline result item."""
 
     item_id: int
-    source: str
-    source_id: str
+    story_id: str
     title: str
     author: Optional[str]
-    genres: List[str]
-    themes: List[str]
-    tone: List[str]
+    genres: list[str]
+    themes: list[str]
+    tone: list[str]
     core_premise: Optional[str]
     embed_input_sha: str
 
@@ -102,8 +99,7 @@ class ExplanationTarget:
     def from_item(cls, item) -> "ExplanationTarget":
         return cls(
             item_id=item.id,
-            source=item.source,
-            source_id=item.source_id,
+            story_id=item.story_id,
             title=item.title,
             author=item.author,
             genres=list(item.genres or []),
@@ -114,9 +110,7 @@ class ExplanationTarget:
         )
 
     def key(self, model: str, fingerprint: str) -> str:
-        return cache_key(
-            model, self.source, self.source_id, self.embed_input_sha, fingerprint
-        )
+        return cache_key(model, self.story_id, self.embed_input_sha, fingerprint)
 
 
 def build_prompt(target: ExplanationTarget, context: str) -> str:
@@ -171,7 +165,7 @@ class ExplanationCache:
     def _pool(self):
         return self._db.read_pool
 
-    async def get_many(self, keys: Sequence[str]) -> Dict[str, str]:
+    async def get_many(self, keys: Sequence[str]) -> dict[str, str]:
         if not keys:
             return {}
         rows = await self._pool.fetch(
@@ -223,7 +217,7 @@ async def explain_many(
     fingerprint: str,
     max_output_tokens: int = 256,
     concurrency: int = 4,
-) -> List[dict]:
+) -> list[dict]:
     """Sync mode: explanations for every target, cached ones served free.
 
     A per-item failure yields `explanation: None` rather than failing the batch —
@@ -319,7 +313,7 @@ async def stream_explanations(
             completed += 1
             continue
 
-        pieces: List[str] = []
+        pieces: list[str] = []
         cancelled = False
         try:
             async for chunk in client.stream_text(

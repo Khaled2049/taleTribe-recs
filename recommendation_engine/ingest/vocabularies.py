@@ -17,12 +17,12 @@ Step 2 is the one that actually guarantees the invariant. Step 1 is what keeps
 step 2 from discarding most of the output.
 """
 
-from typing import FrozenSet, Iterable, List
+from collections.abc import Iterable
 
 # ── Tone: how the book feels to read ────────────────────────────────────
 # Small on purpose. Tone is a coarse signal and a long list would just invite
 # the model to split hairs it cannot split consistently.
-TONES: FrozenSet[str] = frozenset(
+TONES: frozenset[str] = frozenset(
     {
         "absurdist",
         "austere",
@@ -61,7 +61,7 @@ TONES: FrozenSet[str] = frozenset(
 )
 
 # ── Themes and tropes: what the book is *about* ─────────────────────────
-THEMES: FrozenSet[str] = frozenset(
+THEMES: frozenset[str] = frozenset(
     {
         # Growing up, identity
         "coming of age",
@@ -452,7 +452,7 @@ def _canonicalize(raw: str, index: dict, aliases: dict) -> str:
 # the crosswalk already records genre on the item — so they are dropped quietly
 # rather than inflating the violation counter and inviting bogus vocabulary
 # additions.
-KNOWN_GENRE_NOISE: FrozenSet[str] = frozenset(
+KNOWN_GENRE_NOISE: frozenset[str] = frozenset(
     {
         "mystery",
         "murder mystery",
@@ -498,8 +498,8 @@ def split_misfiled(theme_values: Iterable[str], tone_values: Iterable[str]) -> t
 
     Returns (themes, tones).
     """
-    themes_out: List[str] = []
-    tones_out: List[str] = list(tone_values or [])
+    themes_out: list[str] = []
+    tones_out: list[str] = list(tone_values or [])
 
     for value in theme_values or []:
         as_theme = _canonicalize(str(value), _THEME_INDEX, _THEME_ALIASES)
@@ -516,7 +516,7 @@ def split_misfiled(theme_values: Iterable[str], tone_values: Iterable[str]) -> t
     return themes_out, tones_out
 
 
-def filter_themes(values: Iterable[str]) -> List[str]:
+def filter_themes(values: Iterable[str]) -> list[str]:
     """Canonicalize and drop anything outside THEMES, preserving order.
 
     Order matters: the normalization prompt emits themes roughly by salience, and
@@ -525,14 +525,14 @@ def filter_themes(values: Iterable[str]) -> List[str]:
     return _filter(values, _THEME_INDEX, _THEME_ALIASES)
 
 
-def filter_tones(values: Iterable[str]) -> List[str]:
+def filter_tones(values: Iterable[str]) -> list[str]:
     """Canonicalize and drop anything outside TONES, preserving order."""
     return _filter(values, _TONE_INDEX, _TONE_ALIASES)
 
 
-def _filter(values: Iterable[str], index: dict, aliases: dict) -> List[str]:
+def _filter(values: Iterable[str], index: dict, aliases: dict) -> list[str]:
     seen = set()
-    out: List[str] = []
+    out: list[str] = []
     for value in values or []:
         canonical = _canonicalize(str(value), index, aliases)
         if not canonical or canonical in seen:

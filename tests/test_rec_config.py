@@ -4,11 +4,7 @@ Follows the repo convention: env vars set at import time before the module under
 test is imported, `pytestmark` at module level, no conftest.
 """
 
-import os
-
 import pytest
-
-os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "test-project")
 
 from recommendation_engine.config import (  # noqa: E402
     LOCAL_DEV_DSN,
@@ -138,9 +134,9 @@ def test_production_requires_caller_allowlist(monkeypatch):
 
 
 def test_production_rejects_local_dev_dsn(monkeypatch):
-    """The docker-compose default must never reach production."""
+    """story-data's local DSN must never reach production."""
     monkeypatch.delenv("RECS_DATABASE_URL", raising=False)
-    with pytest.raises(ValueError, match="local docker-compose default"):
+    with pytest.raises(ValueError, match="local story-data default"):
         RecSettings(**_prod_kwargs(recs_database_url=LOCAL_DEV_DSN))
 
 

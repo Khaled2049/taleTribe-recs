@@ -17,8 +17,8 @@ passthrough in creditProxy, not a quiet unmetered path here.
 import json
 import logging
 import re
-from collections.abc import Mapping
-from typing import AsyncIterator, List, Optional, cast
+from collections.abc import AsyncIterator, Mapping
+from typing import Optional, cast
 
 import httpx
 from tenacity import (
@@ -342,7 +342,7 @@ def build_client(
     return GeminiClient(api_key=api_key, model=model, timeout=timeout)
 
 
-__all__: List[str] = [
+__all__: list[str] = [
     "DEFAULT_MODEL",
     "GeminiClient",
     "LLMError",

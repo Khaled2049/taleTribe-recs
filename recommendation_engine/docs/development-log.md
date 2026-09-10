@@ -8,6 +8,14 @@ Grouped this way on purpose: the categories turned out to matter far more than t
 individual bugs. Six separate issues shared one shape — **no error, just quietly
 worse results** — and that shape is the defining hazard of a retrieval system.
 
+> **This is a historical record, and it is deliberately not kept in sync with the
+> code.** Entries name modules that have since been deleted — `ingest/backfill.py`,
+> the CMU corpus parser, `source_weight()` — because that is what existed when the
+> bug was found. Rewriting them to use current names would destroy the thing that
+> makes the log useful: an accurate account of what went wrong and when. For the
+> current shape of the service see [architecture.md](architecture.md); for why it
+> changed see [migration-to-story-data.md](migration-to-story-data.md).
+
 ---
 
 ## Category 1: Silent failures
