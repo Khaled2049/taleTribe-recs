@@ -1,7 +1,7 @@
 [project]
 name = "taleTribe-recs"
 version = "0.1.0"
-description = "TaleTribe recommendation service — pgvector retrieval, HyDE, MMR diversification, and LLM explanations"
+description = "TheTaleTribe recommendation service — pgvector retrieval, HyDE, MMR diversification, and LLM explanations"
 license = {text = "MIT"}
 authors = [
     {name = "Khaled Hossain", email = "khaledhossain.not@gmail.com"}

@@ -1,4 +1,4 @@
-"""Load published TaleTribe stories into `recommendations.items`.
+"""Load published TheTaleTribe stories into `recommendations.items`.
 
     # what would be read, no API calls, no key needed
     python -m recommendation_engine.ingest.platform --dry-run
@@ -553,7 +553,7 @@ class _IngestArgs(argparse.Namespace):
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Load published TaleTribe stories into the recommendation catalog."
+        description="Load published TheTaleTribe stories into the recommendation catalog."
     )
     parser.add_argument("--limit", type=int, default=None, help="Stop after N stories")
     parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE)

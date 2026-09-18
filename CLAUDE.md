@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`taleTribe-recs` is TaleTribe's standalone recommendation service: pgvector
+`taleTribe-recs` is TheTaleTribe's standalone recommendation service: pgvector
 retrieval, HyDE query expansion, RRF fusion across multiple seeds, MMR
 diversification, and an LLM explanation layer ("why was this recommended").
 It was split out of `taleTribe-agents/recommendation_engine` to keep its
@@ -14,7 +14,7 @@ longer separate: the `recommendations` schema now lives in story-data's
 Postgres, which story-data migrates. The service, its deploy and its scaling
 stay independent; only the schema moved.
 
-It recommends **published TaleTribe stories**, and nothing else. A CMU book
+It recommends **published TheTaleTribe stories**, and nothing else. A CMU book
 summary corpus used to share the catalog as cold-start scaffolding; it has been
 removed, along with its parser, genre crosswalk, the `item_source` enum and the
 source down-weighting term. `recommendations.items` is a **derived catalog** —
@@ -25,7 +25,7 @@ truth, the same way `story_vector_chunks` in story-data isn't a copy of
 
 Cold start is correspondingly thinner: with a small catalog there is little to
 rank and little for MMR to diversify, and an ad-hoc query naming a book
-TaleTribe does not host has no anchor. That is a known cost, not an oversight.
+TheTaleTribe does not host has no anchor. That is a known cost, not an oversight.
 
 Read `recommendation_engine/docs/running-locally.md` first — it has the full
 walkthrough (setup, the HTTP API with curl examples, loading the catalog,

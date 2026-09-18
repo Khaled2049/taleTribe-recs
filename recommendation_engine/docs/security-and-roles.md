@@ -173,7 +173,7 @@ either prompt's context.
 The realistic attacks are **catalog poisoning** (an author crafts a description that
 makes the model emit themes matching every query, inflating their reach) and
 **explanation defacement** (an author gets attacker-controlled prose shown to readers
-as TaleTribe's own recommendation copy). Both argue for treating `core_premise` and
+as TheTaleTribe's own recommendation copy). Both argue for treating `core_premise` and
 explanation text as untrusted user content in the UI — escape it, never render it as
 markup — and for the confidence gate already in place.
 

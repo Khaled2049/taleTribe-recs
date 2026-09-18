@@ -13,7 +13,7 @@ recommendation_engine/
 
 The schema lives in story-data (`migrations/000019_recommendations_schema.sql`);
 this service does not migrate. The CMU corpus, its parser and its genre
-crosswalk have been removed — the catalog is published TaleTribe stories only.
+crosswalk have been removed — the catalog is published TheTaleTribe stories only.
 ```
 
 ---
@@ -181,8 +181,8 @@ cross-axis terms, records violations), `build_prompt`, `PROMPT_VERSION`.
 tested.
 
 > `genre_crosswalk.py` and its 227-row CSV are **deleted**. They mapped the CMU
-> corpus's free-text genre labels onto TaleTribe's controlled categories. A
-> TaleTribe story already carries a controlled `category`, so the ingest reads it
+> corpus's free-text genre labels onto TheTaleTribe's controlled categories. A
+> TheTaleTribe story already carries a controlled `category`, so the ingest reads it
 > directly and there is nothing to crosswalk.
 
 ---
