@@ -47,7 +47,7 @@ an empty search box, and no active discovery.
 | `data.mode` | Eyebrow | Title |
 |---|---|---|
 | `behavioral` | "Chosen from your reading" | **For you** |
-| `popular` | "A good place to begin" | **Popular on TaleTribe** |
+| `popular` | "A good place to begin" | **Popular on TheTaleTribe** |
 
 A reader with fewer than three signals gets `mode: "popular"`. That is the intended
 experience, not a fallback bug — but note that **today every reader sees it**, because
@@ -185,7 +185,7 @@ and is what the platform understands; `id` is a surrogate key local to the
 `hyde_used`. Most are unrendered today but are exactly what you want in a bug report.
 
 **`unresolved_books` is the one product should care about.** With a platform-only
-catalog, a seed title TaleTribe does not host resolves to nothing and lands here. The
+catalog, a seed title TheTaleTribe does not host resolves to nothing and lands here. The
 UI currently ignores it, so "I liked Dune, find me more" silently becomes an
 unseeded query.
 

@@ -59,7 +59,7 @@ GOOGLE_AI_STUDIO_API_KEY=...      # and make sure USE_MOCK is not "true"
 
 ## Loading the catalog
 
-The catalog is **published TaleTribe stories**, read straight out of story-data's
+The catalog is **published TheTaleTribe stories**, read straight out of story-data's
 database. There is no corpus file to download — if `stories` has no published rows,
 publish something in the app first (or seed one with SQL).
 
@@ -205,7 +205,7 @@ CI green.
 ## What things cost
 
 The old figures here priced a 15,512-book CMU corpus. That corpus is gone, and the
-economics changed shape with it: the catalog is now **published TaleTribe stories**
+economics changed shape with it: the catalog is now **published TheTaleTribe stories**
 — a tiny set, but one that is re-polled forever rather than loaded once.
 
 ### Ingest
@@ -214,7 +214,7 @@ The per-story cost is unchanged, because the models and the prompt shape are:
 **one normalization call (batched ~8 stories per call) plus one embedding.**
 Measured on the 2,000-item CMU run at `gemini-2.5-flash-lite` /
 `gemini-embedding-001` list pricing, that came to **$0.33 / 2,000 ≈ $0.00017 per
-item**. TaleTribe descriptions and chapter summaries are broadly comparable in
+item**. TheTaleTribe descriptions and chapter summaries are broadly comparable in
 length to CMU plot summaries, so that is a fair estimate until there is a real run
 to measure.
 

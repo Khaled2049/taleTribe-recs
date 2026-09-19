@@ -1,4 +1,4 @@
-"""HTTP server for the TaleTribe recommendation service.
+"""HTTP server for TheTaleTribe recommendation service.
 
 Deliberately a separate app from `server.py` at the repo root: this workload has
 its own datastore (Postgres, not Firestore), its own scaling profile (vector
@@ -181,7 +181,7 @@ def create_app() -> FastAPI:
                 await state.llm.aclose()
 
     app = FastAPI(
-        title="TaleTribe Recommendation Service",
+        title="TheTaleTribe Recommendation Service",
         description=(
             "Personalized book recommendations: deterministic pgvector ranking "
             "with an LLM explanation layer."

@@ -177,7 +177,7 @@ no embedding call, no cost.
 
 ### Adding one new story: the walkthrough
 
-Say a TaleTribe author publishes *"The Glass Orchard"*.
+Say a TheTaleTribe author publishes *"The Glass Orchard"*.
 
 ```
 1. Sync picks it up          stories/{id} where isPublished == true, updatedAt > watermark

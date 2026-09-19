@@ -4,9 +4,9 @@ Five endpoints. Every request/response below was captured from a live local serv
 recorded against a real catalog, not written by hand.
 
 > **The worked examples below were recorded against the old CMU-seeded catalog**, so
-> they name books TaleTribe does not host (*Dune: House Harkonnen*, *A Separate
+> they name books TheTaleTribe does not host (*Dune: House Harkonnen*, *A Separate
 > Peace*). The request and response **shapes** are current and correct; only the
-> titles are historical. Every item you get back today is a published TaleTribe
+> titles are historical. Every item you get back today is a published TheTaleTribe
 > story, addressable by its `story_id`.
 
 **Envelope.** Every JSON response is `{success, data, error}`, matching the story

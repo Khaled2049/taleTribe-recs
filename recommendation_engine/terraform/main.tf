@@ -76,19 +76,19 @@ data "google_secret_manager_secret" "gemini" {
 resource "google_service_account" "runtime" {
   project      = var.project_id
   account_id   = "novelsync-recs-run"
-  display_name = "NovelSync recommendations runtime"
+  display_name = "TheTaleTribe recommendations runtime"
 }
 
 resource "google_service_account" "workflow" {
   project      = var.project_id
   account_id   = "novelsync-recs-workflow"
-  display_name = "NovelSync recommendations workflow"
+  display_name = "TheTaleTribe recommendations workflow"
 }
 
 resource "google_service_account" "scheduler" {
   project      = var.project_id
   account_id   = "novelsync-recs-scheduler"
-  display_name = "NovelSync recommendations scheduler"
+  display_name = "TheTaleTribe recommendations scheduler"
 }
 
 resource "google_secret_manager_secret_iam_member" "runtime_secrets" {

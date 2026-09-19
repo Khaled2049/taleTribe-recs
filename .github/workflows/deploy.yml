@@ -68,7 +68,7 @@ jobs:
           gcloud artifacts repositories create "$REPOSITORY" \
             --repository-format=docker --location="$REGION" \
             --project="$PROJECT_ID" \
-            --description="NovelSync recommendation service images"
+            --description="TheTaleTribe recommendation service images"
 
       # Each deploy pushes an immutable :sha image. Keep the newest
       # KEEP_IMAGE_COUNT for rollback and delete the rest, so storage does not

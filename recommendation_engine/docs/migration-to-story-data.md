@@ -8,7 +8,7 @@ Two changes that are cheaper together than apart:
 1. `recommendations.*` stops living in its own Postgres (`:5434`) and becomes a
    schema inside story-data's database. story-data owns the migrations. recs
    stays its own repo, own service, own connection.
-2. The CMU bootstrap corpus is deleted outright. The catalog is TaleTribe
+2. The CMU bootstrap corpus is deleted outright. The catalog is TheTaleTribe
    stories only.
 
 No production data exists, so every step below is a rewrite rather than a data

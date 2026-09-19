@@ -1,4 +1,4 @@
-"""TaleTribe Recommendation Service.
+"""TheTaleTribe Recommendation Service.
 
 A separate FastAPI service that ranks books with deterministic vector search
 (pgvector/HNSW) and uses an LLM only to *explain* the ranking — never to rank.

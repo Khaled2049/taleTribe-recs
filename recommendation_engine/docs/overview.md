@@ -5,7 +5,7 @@ knowledge of vector search assumed.
 
 ## The problem
 
-TaleTribe had no recommendations. Reader-side discovery was **pure recency**: the
+TheTaleTribe had no recommendations. Reader-side discovery was **pure recency**: the
 browse page listed published stories newest-first, optionally filtered to one
 category. `RecommendedReads.tsx` existed as a five-line placeholder. Every AI
 feature on the platform was author-side and gated on *owning* the story, so none of
@@ -55,7 +55,7 @@ near-identical books.
 
 ## What it's built on, and the state of it
 
-- **Published TaleTribe stories only.** Each catalog row carries LLM-derived
+- **Published TheTaleTribe stories only.** Each catalog row carries LLM-derived
   premise/theme/tone metadata and an embedding, and keys back to the story by
   `story_id`. A CMU bootstrap corpus used to share this catalog as cold-start
   scaffolding; it has been removed.
@@ -88,7 +88,7 @@ explanations both batched and streamed, and the full three-term scoring formula.
 
 ## Things product should know
 
-**Every recommendation is a readable TaleTribe story.** That was not true while
+**Every recommendation is a readable TheTaleTribe story.** That was not true while
 the CMU corpus was in the catalog, and the API carried an `off_platform` flag so
 a UI could badge the ones that were dead ends. Both are gone; nothing needs
 badging now.
@@ -111,12 +111,12 @@ is honest and worth stating to product:
 - With a few dozen published stories there is **little to rank and little to
   diversify**. Expect result lists that look thin or repetitive, and a low
   `diversity` number that is reporting reality rather than malfunctioning.
-- An ad-hoc query naming a book TaleTribe does not host — *"something like Dune"* —
+- An ad-hoc query naming a book TheTaleTribe does not host — *"something like Dune"* —
   **has no anchor**. Seed titles are resolved against the catalog by fuzzy match, so
   an unhosted title resolves to nothing and comes back in `unresolved_books`. Free
   text still works (it is embedded directly, or expanded by HyDE first), so the UI
   should prefer prompts over title-matching while the catalog is small.
-- The "For you" shelf silently becomes **"Popular on TaleTribe"** for any reader
+- The "For you" shelf silently becomes **"Popular on TheTaleTribe"** for any reader
   without enough signals. The frontend already switches its title and eyebrow text
   for this — that is the intended experience, not a fallback bug.
 

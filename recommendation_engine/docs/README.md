@@ -1,6 +1,6 @@
-# TaleTribe Recommendation Service — documentation
+# TheTaleTribe Recommendation Service — documentation
 
-A microservice that recommends published TaleTribe stories by **deterministic vector
+A microservice that recommends published TheTaleTribe stories by **deterministic vector
 search**, using an LLM only to *explain* the ranking — never to produce it.
 
 Written for two audiences: engineers learning how a recommender is actually built,

@@ -1,6 +1,6 @@
 # taleTribe-recs
 
-Standalone recommendation service for TaleTribe: pgvector retrieval, HyDE,
+Standalone recommendation service for TheTaleTribe: pgvector retrieval, HyDE,
 RRF fusion, MMR diversification, and LLM-generated explanations.
 
 Split out of `taleTribe-agents/recommendation_engine` to keep its Postgres/
@@ -13,7 +13,7 @@ from `taleTribe-agents` (not a shared package) — see that repo if the two
 copies need to be reconciled, particularly `EXPECTED_EMBEDDING_DIM`, which
 every vector this service writes must agree with.
 
-The catalog is published TaleTribe stories only, ingested with
+The catalog is published TheTaleTribe stories only, ingested with
 `python -m recommendation_engine.ingest.platform`. Reader signals are derived by
 story-data (`go run ./cmd/api sync-recs`), not by this service — it is not
 permitted to read `reading_progress`.

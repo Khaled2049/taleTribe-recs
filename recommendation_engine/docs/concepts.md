@@ -475,13 +475,13 @@ Observed in production data with 250 synthetic readers:
 
 ### No source multiplier
 
-There used to be one. A CMU bootstrap corpus shared the catalog with TaleTribe
+There used to be one. A CMU bootstrap corpus shared the catalog with TheTaleTribe
 stories and was multiplied down as the real catalog grew. The corpus is gone —
-every item is a published TaleTribe story — so the term, its two config knobs,
+every item is a published TheTaleTribe story — so the term, its two config knobs,
 and the `off_platform` flag went with it.
 
 The problem it solved has not gone away: a small catalog gives a thin shelf, and
-an ad-hoc query naming a book TaleTribe does not host now has no anchor to match
+an ad-hoc query naming a book TheTaleTribe does not host now has no anchor to match
 against. That is a known cost of platform-only, not an oversight.
 
 ---
