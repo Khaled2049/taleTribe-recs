@@ -19,7 +19,7 @@ hundred microseconds in numpy.
 """
 
 import math
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from typing import Optional, cast
 
 import numpy as np
@@ -150,7 +150,7 @@ def intra_list_diversity(
     return 1.0 - max(-1.0, min(1.0, mean_similarity))
 
 
-__all__: Iterable[str] = [
+__all__: list[str] = [
     "DEFAULT_LAMBDA",
     "diversify",
     "intra_list_diversity",

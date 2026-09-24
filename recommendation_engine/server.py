@@ -297,7 +297,7 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/health")
-    async def health_check(response: JSONResponse = None):  # noqa: ARG001
+    async def health_check():
         """Assert every precondition that would otherwise fail *silently*.
 
         A missing HNSW index, a pgvector older than 0.8.0, or an embedder at the

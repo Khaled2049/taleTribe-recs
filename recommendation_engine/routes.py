@@ -337,17 +337,17 @@ def build_router(verify_internal_token) -> APIRouter:
                 )
             text = payload.prompt
             if hyde_client is not None:
-                result = await hyde_mod.generate(
+                hyde_result = await hyde_mod.generate(
                     hyde_client,
                     payload.prompt,
                     max_output_tokens=settings.recs_hyde_max_output_tokens,
                 )
-                if result is not None:
+                if hyde_result is not None:
                     # Embed the hypothetical catalog entry instead of the request,
                     # so query and documents are the same kind of text.
-                    text = result.embed_text
+                    text = hyde_result.embed_text
                     hyde_used = True
-                    hyde_doc = result.as_dict()
+                    hyde_doc = hyde_result.as_dict()
             query_vectors.append(await embedder.embed_query(text))
 
         # Every named book missing from the catalog is a legitimate outcome, not an
