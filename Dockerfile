@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM python:3.11-slim AS builder
+FROM python:3.14-slim AS builder
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     POETRY_NO_INTERACTION=1
@@ -13,7 +13,7 @@ RUN poetry export --only main --without-hashes --format requirements.txt \
       --output requirements.txt \
  && pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
 
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
