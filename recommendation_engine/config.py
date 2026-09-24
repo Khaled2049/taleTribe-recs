@@ -112,7 +112,7 @@ class RecSettings(BaseSettings):
     def clamp_rpm(cls, v: object) -> int:
         """Never negative — a negative bucket would read as 'unlimited'."""
         try:
-            return max(0, int(v))  # type: ignore[arg-type]
+            return max(0, int(v))  # type: ignore[call-overload]
         except (TypeError, ValueError):
             return 0
 
@@ -130,7 +130,7 @@ class RecSettings(BaseSettings):
         silently switch it off, so a bad value is rejected rather than read
         as 0."""
         try:
-            return max(0, int(v))  # type: ignore[arg-type]
+            return max(0, int(v))  # type: ignore[call-overload]
         except (TypeError, ValueError):
             raise ValueError("daily budget must be an integer >= 0")
 
@@ -139,7 +139,7 @@ class RecSettings(BaseSettings):
     def clamp_ef_search(cls, v: object) -> int:
         """pgvector rejects ef_search < 1; a too-small value silently guts recall."""
         try:
-            return max(1, int(v))  # type: ignore[arg-type]
+            return max(1, int(v))  # type: ignore[call-overload]
         except (TypeError, ValueError):
             return 100
 
@@ -147,7 +147,7 @@ class RecSettings(BaseSettings):
     @classmethod
     def clamp_positive(cls, v: object) -> int:
         try:
-            return max(1, int(v))  # type: ignore[arg-type]
+            return max(1, int(v))  # type: ignore[call-overload]
         except (TypeError, ValueError):
             return 1
 

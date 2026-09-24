@@ -23,7 +23,7 @@ backfill rather than a rescoring rewrite.
 """
 
 import math
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Optional
 
@@ -394,7 +394,7 @@ def is_negative_signal(kind: str, value: Optional[float]) -> bool:
     return kind == "rating" and value is not None and float(value) <= 2
 
 
-__all__: Iterable[str] = [
+__all__: list[str] = [
     "DEFAULTS",
     "MAX_BEHAVIORAL_WEIGHT",
     "CatalogStats",

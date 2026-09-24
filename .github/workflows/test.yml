@@ -3,14 +3,13 @@ name: Tests
 # Called by pr-check.yml and deploy.yml, so the suite a PR passes is the suite a
 # deploy runs, rather than two copies that drift apart.
 on:
-  workflow_call:
+  workflow_call: null
 
 permissions:
   contents: read
-
 jobs:
   test:
-    name: Full test suite
+    name: taleTribe-recs / tests-format-lint
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
@@ -34,18 +33,15 @@ jobs:
 
     steps:
       - name: Checkout recommendations
-        uses: actions/checkout@v4
-
-      # story-data owns the schema, and its main branch is the migration set
-      # production runs.
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       - name: Checkout story-data migrations
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           repository: Khaled2049/story-data
           path: _story-data
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
         with:
           go-version-file: _story-data/go.mod
           cache-dependency-path: _story-data/go.sum
@@ -59,19 +55,19 @@ jobs:
           go run ./cmd/api migrate
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.11"
 
       - name: Install Poetry
-        uses: snok/install-poetry@v1
+        uses: snok/install-poetry@a783c322200f0519c7926aa6faa857c4e23e9263  # v1
         with:
           version: 2.1.3
           virtualenvs-create: true
           virtualenvs-in-project: true
 
       - name: Cache Poetry virtualenv
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: .venv
           key: venv-${{ runner.os }}-${{ github.repository }}-py3.11-${{ hashFiles('poetry.lock') }}

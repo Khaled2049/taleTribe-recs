@@ -28,3 +28,6 @@ ENV/
 *.swp
 *.swo
 .DS_Store
+
+# Temporary Workload Identity Federation credentials
+gha-creds-*.json

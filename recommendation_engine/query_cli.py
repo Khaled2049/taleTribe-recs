@@ -164,7 +164,7 @@ async def run(args: _QueryArgs) -> int:
         return 0
     finally:
         await db.aclose()
-        if hasattr(embedder, "aclose"):
+        if embedder is not None and hasattr(embedder, "aclose"):
             await embedder.aclose()
 
 

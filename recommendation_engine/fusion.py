@@ -19,7 +19,7 @@ The output is normalized back onto [0, 1] so it can be substituted directly for
 cosine similarity as the `sem` term in the scoring blend.
 """
 
-from collections.abc import Hashable, Iterable, Mapping, Sequence
+from collections.abc import Hashable, Mapping, Sequence
 
 DEFAULT_RRF_K = 60
 
@@ -127,7 +127,7 @@ def merge_candidate_records(
     return out
 
 
-__all__: Iterable[str] = [
+__all__: list[str] = [
     "DEFAULT_RRF_K",
     "fuse_and_rank",
     "fuse_normalized",
