@@ -47,12 +47,15 @@ build-backend = "poetry.core.masonry.api"
 [tool.black]
 line-length = 88
 target-version = ["py311"]
+extend-exclude = "^/_story-data/"
 
 [tool.isort]
 profile = "black"
+extend_skip = ["_story-data"]
 
 [tool.ruff]
 line-length = 88
+extend-exclude = ["_story-data"]
 
 [tool.mypy]
 plugins = ["pydantic.mypy"]
