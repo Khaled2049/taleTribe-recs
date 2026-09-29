@@ -108,6 +108,7 @@ curl -X POST localhost:8100/recommend/adhoc \
         "core_premise": "Amidst political intrigue and the struggle for control of
                          the spice melange, House Harkonnen consolidates power...",
         "published_year": 2000,
+        "cover_url": "https://storage.googleapis.com/.../thumb.webp",
         "score": 0.885314,
         "matched_query_count": 1,
         "explanation_cache_key": "40d8fa1de64df816408dad3d4ed88310f37c0735fb0154cc..."
