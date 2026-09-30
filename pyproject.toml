@@ -9,18 +9,18 @@ authors = [
 requires-python = ">=3.11,<4.0"
 dependencies = [
     "fastapi>=0.104.1",
-    "uvicorn[standard]>=0.24.0",
-    "pydantic>=2.5.0",
+    "uvicorn[standard]>=0.54.0",
+    "pydantic>=2.13.5",
     "pydantic-settings>=2.0.0",
     "python-dotenv>=1.0.0",
     "asyncpg>=0.29.0",
     "pgvector>=0.3.0",
     "structlog>=24.0.0",
-    "google-auth>=2.23.0",
+    "google-auth>=2.59.0",
     "requests>=2.31.0",
     "httpx>=0.25.0",
     "tenacity>=8.0.0",
-    "anyio>=4.0.0",
+    "anyio>=4.15.1",
     "numpy>=1.24.0",
 ]
 
@@ -35,7 +35,7 @@ isort = "*"
 optional = true
 
 [tool.poetry.group.local-embeddings.dependencies]
-sentence-transformers = ">=2.2.0"
+sentence-transformers = ">=6.1.0"
 
 [tool.poetry]
 package-mode = false
