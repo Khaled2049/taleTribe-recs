@@ -123,6 +123,25 @@ def _api_error(
     )
 
 
+_COVERS_SQL = """
+SELECT id, COALESCE(NULLIF(thumbnail_url, ''), NULLIF(cover_image_url, '')) AS cover_url
+  FROM stories
+ WHERE id = ANY($1::uuid[]) AND is_published
+"""
+
+
+async def attach_cover_urls(db, items: list[dict]) -> list[dict]:
+    if not items:
+        return items
+    rows = await db.read_pool.fetch(
+        _COVERS_SQL, list({item["story_id"] for item in items})
+    )
+    covers = {str(row["id"]): row["cover_url"] for row in rows}
+    for item in items:
+        item["cover_url"] = covers.get(item["story_id"])
+    return items
+
+
 def build_router(verify_internal_token) -> APIRouter:
     """Build the router. The auth dependency is injected so `server.py` keeps
     ownership of how callers are verified."""
@@ -268,12 +287,14 @@ def build_router(verify_internal_token) -> APIRouter:
             stats=stats,
             filters=filters,
         )
+        data = result.as_dict()
+        await attach_cover_urls(state.db, data["items"])
         return {
             "success": True,
             "data": {
                 "mode": mode,
                 "n_signals": row["n_signals"] if row is not None else 0,
-                **result.as_dict(),
+                **data,
             },
         }
 
@@ -370,6 +391,7 @@ def build_router(verify_internal_token) -> APIRouter:
             query=payload.prompt, seed_item_ids=[r["id"] for r in resolved]
         )
         data = result.as_dict()
+        await attach_cover_urls(state.db, data["items"])
         # Returned so a client can tell whether an explanation would be a cache hit
         # before asking for one.
         for item in data["items"]:

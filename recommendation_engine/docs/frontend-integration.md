@@ -171,7 +171,8 @@ depends on. Anything the frontend reads is effectively frozen:
 
 | Field | Used for |
 |---|---|
-| `story_id` | **The link target** — `/story/${item.story_id}` — and the cover lookup via `useStoryCovers` |
+| `story_id` | **The link target** — `/story/${item.story_id}` |
+| `cover_url` | The card cover: the story's thumbnail, else its full cover, `null` when it has neither. Read from `stories` after ranking, one query per response, and only for published stories |
 | `id` | The `items.id` surrogate key, sent back in `itemIds` when requesting an explanation |
 | `title`, `author`, `core_premise`, `themes`, `tone` | Card display and the premise fallback chain |
 | `score`, `breakdown` | Debugging only; not rendered |

@@ -40,6 +40,7 @@ from conftest import (
     drop_stories,
     require_recommendations_schema,
     seed_stories,
+    story_id_for,
 )
 from fastapi.testclient import TestClient
 from pgvector.asyncpg import register_vector
@@ -333,6 +334,39 @@ def test_adhoc_items_name_the_story_they_came_from():
         assert items
         assert all(uuid.UUID(item["story_id"]) for item in items)
         assert not any("off_platform" in item for item in items)
+    finally:
+        asyncio.run(_cleanup())
+
+
+def test_items_carry_the_story_cover():
+    import asyncio
+
+    async def add_covers(story_ids):
+        conn = await _connect()
+        try:
+            await conn.execute(
+                "UPDATE stories SET thumbnail_url = 'https://img.test/' || id::text "
+                "WHERE id = ANY($1::uuid[])",
+                story_ids,
+            )
+        finally:
+            await conn.close()
+
+    fixture_ids = {story_id_for(key) for key in KEYS}
+    asyncio.run(_seed())
+    try:
+        asyncio.run(add_covers(list(fixture_ids)))
+        with _client() as client:
+            response = client.post(
+                "/recommend/adhoc",
+                json={"user_id": "u1", "books": [{"title": "Route Test Alpha"}]},
+            )
+        items = response.json()["data"]["items"]
+        fixture_items = [item for item in items if item["story_id"] in fixture_ids]
+
+        assert fixture_items
+        for item in fixture_items:
+            assert item["cover_url"] == f"https://img.test/{item['story_id']}"
     finally:
         asyncio.run(_cleanup())
 
