@@ -73,8 +73,10 @@ USE_MOCK=true python -m recommendation_engine.ingest.platform --skip-normalizati
 python -m recommendation_engine.ingest.platform
 ```
 
-Incremental by default: each run stores the newest `stories.updated_at` it saw
-in `ingest_runs.cursor` and the next run starts past it. `--full` re-reads
+Incremental by default: each run stores the newest `stories.public_updated_at`
+it saw in `ingest_runs.cursor` and the next run starts past it. That column
+moves only on reader-visible changes (a chapter release, an edit to a released
+chapter, a metadata edit), not on an author's draft saves. `--full` re-reads
 everything, which is cheap — an unchanged `embed_input_sha` is never re-embedded.
 
 Without `GOOGLE_AI_STUDIO_API_KEY`, ranking still works; HyDE and
@@ -142,7 +144,10 @@ is how CI stays green with no `-m` exclusion in `pytest.ini`).
 - **`ingest/`** — `platform.py` reads published stories out of story-data (same
   database, no HTTP), normalizes them with an LLM (`normalize_llm.py`), composes
   the embed text (`compose.py`) against a controlled theme/tone vocabulary
-  (`vocabularies.py`), and upserts `recommendations.items`. Unpublishing is
+  (`vocabularies.py`), and upserts `recommendations.items`. It reads **released
+  chapters only** (`chapters.published_at IS NOT NULL`): a draft chapter's
+  summary must never reach an embedding or an LLM prompt, and the role's grant
+  on `chapters` is table-wide, so that filter is the only guard. Unpublishing is
   reconciled by `_retire_unpublished`; deletion is handled by the `story_id`
   foreign key. The CMU corpus parser, genre crosswalk and backfill are gone.
 - **`sync/`** — aggregate refresh (`stats.py`: `item_stats`, `pop_score`,

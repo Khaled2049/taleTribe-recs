@@ -13,11 +13,18 @@ Replaces the CMU corpus backfill. Stories are read straight out of story-data's
 database — the `recommendations` schema is a schema in it, so this is a query
 rather than an export.
 
-**Incremental by default.** Each run records the newest `updated_at` it saw in
-`recommendations.ingest_runs.cursor`, and the next run reads only past it. A
+**Incremental by default.** Each run records the newest `public_updated_at` it
+saw in `recommendations.ingest_runs.cursor`, and the next run reads only past
+it. That column moves only when readers can see a change, so an author's draft
+saves do not make the story look new. A
 `--full` run ignores the cursor. Either way the work is cheap when nothing has
 changed: a row whose `embed_input_sha` is unchanged is never re-embedded, so
 re-reading the whole catalog costs one query and no tokens.
+
+**Only released chapters are read.** A chapter is a private draft until its
+author releases it (`chapters.published_at`), and this role's grant on
+`chapters` is table-wide, so the filter here is the only thing keeping draft
+text out of an embedding or an LLM prompt.
 
 **Eligibility is reconciled, not assumed.** The read only sees published
 stories, so unpublishing is invisible to it — the story simply stops appearing.
@@ -116,22 +123,27 @@ class LoadStats:
 # `chapters` in one query multiplies their rows together, which silently
 # inflates `sum(word_count)` by the number of tags. `count(DISTINCT ...)` hides
 # that for the counts and not at all for the sum.
+#
+# Every chapter subquery carries `published_at IS NOT NULL`: see the module
+# docstring. A new one without it leaks draft text.
 _READ_SQL = """
 SELECT s.id, s.title, s.author_name, s.description, s.category,
-       s.target_audience, s.language, s.created_at, s.updated_at,
+       s.target_audience, s.language, s.created_at,
+       s.public_updated_at AS updated_at,
        COALESCE((SELECT array_agg(st.tag ORDER BY st.tag)
                    FROM story_tags st WHERE st.story_id = s.id), '{}') AS tags,
-       (SELECT count(*) FROM chapters c WHERE c.story_id = s.id) AS chapter_count,
-       (SELECT COALESCE(sum(c.word_count), 0)
-          FROM chapters c WHERE c.story_id = s.id) AS word_count,
+       (SELECT count(*) FROM chapters c
+         WHERE c.story_id = s.id AND c.published_at IS NOT NULL) AS chapter_count,
+       (SELECT COALESCE(sum(c.word_count), 0) FROM chapters c
+         WHERE c.story_id = s.id AND c.published_at IS NOT NULL) AS word_count,
        (SELECT string_agg(cs.summary, ' ' ORDER BY c.position)
           FROM chapters c
           JOIN chapter_summaries cs ON cs.chapter_id = c.id
-         WHERE c.story_id = s.id) AS chapter_summary
+         WHERE c.story_id = s.id AND c.published_at IS NOT NULL) AS chapter_summary
   FROM stories s
  WHERE s.is_published
-   AND ($1::timestamptz IS NULL OR s.updated_at > $1::timestamptz)
- ORDER BY s.updated_at, s.id
+   AND ($1::timestamptz IS NULL OR s.public_updated_at > $1::timestamptz)
+ ORDER BY s.public_updated_at, s.id
 """
 
 
@@ -162,7 +174,7 @@ async def read_stories(
 
 
 async def _last_cursor(pool) -> Optional[datetime]:
-    """The newest `updated_at` a completed run has already covered."""
+    """The newest `public_updated_at` a completed run has already covered."""
     return await pool.fetchval(
         "SELECT cursor::timestamptz FROM recommendations.ingest_runs "
         "WHERE kind = $1 AND status = 'completed' AND cursor IS NOT NULL "
