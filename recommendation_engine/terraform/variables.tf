@@ -24,7 +24,7 @@ variable "service_name" {
 variable "firebase_functions_service_account" {
   description = "Gen 2 Firebase Functions runtime identity allowed to invoke recs."
   type        = string
-  default     = "793308156964-compute@developer.gserviceaccount.com"
+  default     = "novelsync-functions@story-6f89f.iam.gserviceaccount.com"
 }
 
 variable "deployment_service_account" {
